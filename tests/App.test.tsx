@@ -219,7 +219,7 @@ describe('application integration', () => {
     })
   })
 
-  it('resumes a review in correction state without losing the typed answer', async () => {
+  it('resumes correction details without losing the typed answer', async () => {
     localStorage.setItem('ankikani.activeDeck', 'German')
     localStorage.setItem(
       'ankikani.session.German.review',
@@ -238,13 +238,15 @@ describe('application integration', () => {
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
-    await screen.findByText('Expected answer')
+    await screen.findByRole('button', { name: 'Check correction' })
     expect(window.location.pathname).toBe('/reviews')
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
       'der Ansage',
     )
     const expectedAnswer = screen.getByLabelText('die Ansage')
     expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
+    expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
   })
 
   it('does not color article-like text on non-German cards', async () => {
@@ -275,9 +277,78 @@ describe('application integration', () => {
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
-    await screen.findByText('Expected answer')
+    await screen.findByRole('button', { name: 'Check correction' })
     const expectedAnswer = screen.getByText('die hard')
     expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
+  })
+
+  it('shows old details for correction then advances after one confirmation', async () => {
+    const nextCard: StudyCard = {
+      ...reviewCard,
+      cardId: reviewCard.cardId + 1,
+      noteId: reviewCard.noteId + 1,
+      prompt: 'connection',
+      canonicalAnswer: 'die Verbindung',
+      acceptedAnswers: ['die Verbindung'],
+    }
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard, nextCard],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Check correction' })
+    expect(mocks.answer).not.toHaveBeenCalled()
+    expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check correction' }))
+    expect(mocks.answer).toHaveBeenCalledWith(
+      reviewCard.cardId,
+      1,
+      expect.any(String),
+    )
+    await screen.findByRole('heading', { name: nextCard.prompt })
+  })
+
+  it('grades a corrected retype as Good from the details screen', async () => {
+    const nextCard: StudyCard = {
+      ...reviewCard,
+      cardId: reviewCard.cardId + 1,
+      noteId: reviewCard.noteId + 1,
+      prompt: 'connection',
+    }
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard, nextCard],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Check correction' })
+
+    fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check correction' }))
+
+    await screen.findByRole('button', { name: 'Continue' })
+    expect(mocks.answer).toHaveBeenCalledWith(
+      reviewCard.cardId,
+      3,
+      expect.any(String),
+    )
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('var(--mint-soft)')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await screen.findByRole('heading', { name: nextCard.prompt })
   })
 
   it('does not leave dashboard for a saved session', async () => {

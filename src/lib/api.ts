@@ -110,7 +110,12 @@ export const api = {
   cards: (deck: string, cardIds: number[], config: StudyConfig) =>
     post<StudyCard[]>('/api/cards', { deck, cardIds, config }),
   answer: (cardId: number, ease: 1 | 3, requestId: string) =>
-    answerPost<{ saved: true; cardId: number; ease: 1 | 3 }>('/api/answer', {
+    answerPost<{
+      saved: boolean
+      stale?: true
+      cardId: number
+      ease: 1 | 3
+    }>('/api/answer', {
       cardId,
       ease,
       requestId,

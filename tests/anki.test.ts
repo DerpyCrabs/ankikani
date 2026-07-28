@@ -55,6 +55,19 @@ describe('AnkiConnect bridge', () => {
     await expect(ankiInvoke('findCards')).rejects.toThrow('bad query')
   })
 
+  it('retries transient gateway failures', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 502 }))
+      .mockResolvedValueOnce(
+        Response.json({ result: ['German'], error: null }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(ankiInvoke('deckNames')).resolves.toEqual(['German'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('uses a dedicated unavailable error for network failure', async () => {
     vi.stubGlobal(
       'fetch',

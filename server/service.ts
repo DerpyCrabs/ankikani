@@ -444,7 +444,16 @@ export async function getCards(
 
 const answerRequests = new Map<
   string,
-  { cardId: number; ease: 1 | 3; result: Promise<{ saved: true; cardId: number; ease: 1 | 3 }> }
+  {
+    cardId: number
+    ease: 1 | 3
+    result: Promise<{
+      saved: boolean
+      stale?: true
+      cardId: number
+      ease: 1 | 3
+    }>
+  }
 >()
 
 export async function answerCard(
@@ -466,8 +475,10 @@ export async function answerCard(
     const accepted = await ankiInvoke<boolean[]>('answerCards', {
       answers: [{ cardId, ease }],
     })
-    if (!accepted[0]) throw new Error('Anki did not accept the card grade.')
-    return { saved: true as const, cardId, ease }
+    if (!accepted[0]) {
+      return { saved: false, stale: true as const, cardId, ease }
+    }
+    return { saved: true, cardId, ease }
   })()
 
   if (requestId) {

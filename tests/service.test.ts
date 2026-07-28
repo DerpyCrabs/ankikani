@@ -174,11 +174,14 @@ describe('grade integration', () => {
     })
   })
 
-  it('fails when Anki rejects the grade', async () => {
+  it('marks missing stale cards without trapping the session', async () => {
     mocks.invoke.mockResolvedValue([false])
-    await expect(answerCard(42, 1)).rejects.toThrow(
-      'Anki did not accept the card grade.',
-    )
+    await expect(answerCard(42, 1)).resolves.toEqual({
+      saved: false,
+      stale: true,
+      cardId: 42,
+      ease: 1,
+    })
   })
 
   it('deduplicates a repeated grading request', async () => {

@@ -1695,7 +1695,11 @@ function StudyRunner(props: {
     queueMicrotask(() => answerInput?.focus())
   })
 
-  async function save(ease: 1 | 3, outcome: 'correct' | 'incorrect') {
+  async function save(
+    ease: 1 | 3,
+    outcome: 'correct' | 'incorrect',
+    advanceAfterSave = false,
+  ) {
     const card = current()
     if (!card || saving()) return
     setSaving(true)
@@ -1717,6 +1721,10 @@ function StudyRunner(props: {
           { ...card, practiceOnly: true },
         ])
       }
+      if (advanceAfterSave) {
+        next()
+        return
+      }
       void playAudioSequence(
         card.audioFilenames?.length
           ? card.audioFilenames
@@ -1737,16 +1745,25 @@ function StudyRunner(props: {
     const card = current()
     if (!card || saving()) return
     const currentPhase = phase()
-    if (currentPhase === 'answering' || currentPhase === 'correction') {
+    if (currentPhase === 'answering') {
       const parts = partsFor(card)
       const correct = parts.every((part, partIndex) =>
         matchesAnswerPart(inputs()[partIndex] ?? '', part),
       )
-      if (currentPhase === 'answering' && !correct) {
-        setPhase('correction')
-      } else {
-        await save(correct ? 3 : 1, correct ? 'correct' : 'incorrect')
-      }
+      if (correct) await save(3, 'correct')
+      else setPhase('correction')
+      return
+    }
+    if (currentPhase === 'correction') {
+      const parts = partsFor(card)
+      const correct = parts.every((part, partIndex) =>
+        matchesAnswerPart(inputs()[partIndex] ?? '', part),
+      )
+      await save(
+        correct ? 3 : 1,
+        correct ? 'correct' : 'incorrect',
+        !correct,
+      )
       return
     }
     next()
@@ -1787,7 +1804,7 @@ function StudyRunner(props: {
               : saving()
                 ? 'Saving answer to Anki.'
                 : phase() === 'correction'
-                  ? 'Answer needs correction. Expected answer is shown.'
+                  ? 'Answer needs correction. Answer details are shown.'
                   : phase() === 'feedback'
                     ? result() === 'correct'
                       ? 'Answer accepted.'
@@ -1897,40 +1914,7 @@ function StudyRunner(props: {
                   </For>
                 </div>
 
-                <Show when={phase() === 'correction'}>
-                  <div class="mt-5 rounded-xl bg-white/75 p-4">
-                    <p class="text-xs font-black uppercase tracking-[0.12em] text-[var(--coral-dark)]">
-                      Expected answer
-                    </p>
-                    <p class="mt-1 text-xl font-black">
-                      <GermanArticleText
-                        value={card().canonicalAnswer}
-                        language={card().answerLanguage}
-                      />
-                    </p>
-                    <Show when={card().acceptedAnswers.length > 1}>
-                      <div class="mt-1 flex flex-wrap gap-x-2 text-sm text-[var(--muted)]">
-                        <span>Also accepted:</span>
-                        <For each={card().acceptedAnswers.slice(1)}>
-                          {(answer, index) => (
-                            <span>
-                              <Show when={index() > 0}>· </Show>
-                              <GermanArticleText
-                                value={answer}
-                                language={card().answerLanguage}
-                              />
-                            </span>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
-                    <p class="mt-3 text-sm font-semibold text-[var(--muted)]">
-                      Clear and retype it for Good, or submit this answer again for Again.
-                    </p>
-                  </div>
-                </Show>
-
-                <Show when={phase() === 'feedback'}>
+                <Show when={phase() === 'correction' || phase() === 'feedback'}>
                   <Feedback card={card()} />
                 </Show>
 
