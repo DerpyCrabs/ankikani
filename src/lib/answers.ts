@@ -9,6 +9,32 @@ export type AnswerAttemptPhase = 'answering' | 'correction'
 
 const ARTICLE_ALTERNATIVE =
   /^(der|die|das|ein|eine)\/(der|die|das|ein|eine)\s+(.+)$/iu
+const GENDER_ARTICLE = /^(der|die|das)$/iu
+const GENDER_ARTICLE_LIST =
+  /^(der|die|das)(?:\s*\/\s*(der|die|das))*$/iu
+
+export type GermanGenderArticle = 'der' | 'die' | 'das'
+
+export interface GermanArticleHeadword {
+  articles: GermanGenderArticle[]
+  word: string
+}
+
+export function splitGermanArticle(
+  value: string,
+): GermanArticleHeadword | null {
+  const match = value
+    .trim()
+    .match(/^((?:der|die|das)(?:\s*\/\s*(?:der|die|das))*)\s+(.+)$/iu)
+  if (!match) return null
+  const articles = match[1]
+    .split(/\s*\/\s*/u)
+    .map((article) => article.toLocaleLowerCase('de-DE'))
+    .filter((article): article is GermanGenderArticle =>
+      GENDER_ARTICLE.test(article),
+    )
+  return articles.length ? { articles, word: match[2] } : null
+}
 
 export function stripHtml(value: string): string {
   return value
@@ -104,12 +130,30 @@ function germanBase(value: string): string {
   const withoutGrammarMetadata = value
     .replace(/\((?:pl|sing|ugs|fam|form)\.?\)/giu, '')
     .trim()
+  const parentheticalArticle = withoutGrammarMetadata.match(
+    /^(.+?)\s*\(((?:der|die|das)(?:\s*\/\s*(?:der|die|das))*)\)$/iu,
+  )
+  if (parentheticalArticle && GENDER_ARTICLE_LIST.test(parentheticalArticle[2])) {
+    return `${parentheticalArticle[2]} ${parentheticalArticle[1]}`
+  }
+  const trailingArticle = withoutGrammarMetadata.match(
+    /^(.+?),\s*((?:der|die|das)(?:\s*\/\s*(?:der|die|das))*)$/iu,
+  )
+  if (trailingArticle && GENDER_ARTICLE_LIST.test(trailingArticle[2])) {
+    return `${trailingArticle[2]} ${trailingArticle[1]}`
+  }
 
   return splitTopLevel(withoutGrammarMetadata, new Set([',']))[0] ?? ''
 }
 
 export function germanAnswerVariants(raw: string): string[] {
   const base = germanBase(cleanupSource(raw))
+  const genderedHeadword = splitGermanArticle(base)
+  if (genderedHeadword && genderedHeadword.articles.length > 1) {
+    return genderedHeadword.articles.map(
+      (article) => `${article} ${genderedHeadword.word}`,
+    )
+  }
   const articleMatch = base.match(ARTICLE_ALTERNATIVE)
 
   const slashVariants = articleMatch

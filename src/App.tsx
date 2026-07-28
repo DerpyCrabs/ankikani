@@ -27,7 +27,11 @@ import {
   onMount,
 } from 'solid-js'
 import { api } from './lib/api'
-import { matchesAnswerPart } from './lib/answers'
+import {
+  matchesAnswerPart,
+  splitGermanArticle,
+  type GermanGenderArticle,
+} from './lib/answers'
 import {
   adaptCard,
   configFromLegacy,
@@ -1540,18 +1544,24 @@ function LessonTeaching(props: {
           <span class="rounded-full bg-[var(--yellow)] px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
             New word {props.index + 1} of {props.total}
           </span>
-          <AudioButton
-            filenames={
-              props.item.promptAudioFilenames?.length
-                ? props.item.promptAudioFilenames
-                : props.item.audioFilenames?.length
-                  ? props.item.audioFilenames
-                  : [props.item.promptAudioFilename ?? props.item.audioFilename]
-                      .filter((value): value is string => Boolean(value))
-            }
-            autoplay={props.item.contentKind === 'audio'}
-            hotkey
-          />
+          <div class="flex flex-wrap items-center justify-end gap-3">
+            <AudioButton
+              filenames={
+                props.item.promptAudioFilenames?.length
+                  ? props.item.promptAudioFilenames
+                  : props.item.audioFilenames?.length
+                    ? props.item.audioFilenames
+                    : [props.item.promptAudioFilename ?? props.item.audioFilename]
+                        .filter((value): value is string => Boolean(value))
+              }
+              autoplay={props.item.contentKind === 'audio'}
+              hotkey
+            />
+            <button class="button-soft-primary" onClick={props.onNext}>
+              {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
+              <ChevronRight class="size-4" />
+            </button>
+          </div>
         </div>
         <div class="grid gap-4 md:grid-cols-2">
           <div class="card-shell bg-[var(--mint-soft)] p-6 sm:p-8">
@@ -1563,7 +1573,10 @@ function LessonTeaching(props: {
               </div>
             </Show>
             <h1 class="text-3xl font-black tracking-[-0.045em]">
-              {card()?.prompt || props.item.sourceWord || 'Listen'}
+              <GermanArticleText
+                value={card()?.prompt || props.item.sourceWord || 'Listen'}
+                language={card()?.promptLanguage}
+              />
             </h1>
             <Show when={props.item.sourceExample}>
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.sourceExample}</p>
@@ -1571,7 +1584,10 @@ function LessonTeaching(props: {
           </div>
           <div class="card-shell bg-[var(--violet-soft)] p-6 sm:p-8">
             <h2 class="text-3xl font-black tracking-[-0.04em]">
-              {card()?.canonicalAnswer || props.item.targetMeaning}
+              <GermanArticleText
+                value={card()?.canonicalAnswer || props.item.targetMeaning}
+                language={card()?.answerLanguage}
+              />
             </h2>
             <Show when={props.item.targetExample}>
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.targetExample}</p>
@@ -1588,10 +1604,6 @@ function LessonTeaching(props: {
             </For>
           </div>
         </div>
-        <button class="button-soft-primary mt-8 w-full sm:ml-auto sm:flex sm:w-auto" onClick={props.onNext}>
-          {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
-          <ChevronRight class="size-4" />
-        </button>
       </article>
     </StudyShell>
   )
@@ -1836,7 +1848,10 @@ function StudyRunner(props: {
               </Show>
               <Show when={card().prompt}>
                 <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
-                  {card().prompt}
+                  <GermanArticleText
+                    value={card().prompt}
+                    language={card().promptLanguage}
+                  />
                 </h1>
               </Show>
 
@@ -1887,11 +1902,27 @@ function StudyRunner(props: {
                     <p class="text-xs font-black uppercase tracking-[0.12em] text-[var(--coral-dark)]">
                       Expected answer
                     </p>
-                    <p class="mt-1 text-xl font-black">{card().canonicalAnswer}</p>
+                    <p class="mt-1 text-xl font-black">
+                      <GermanArticleText
+                        value={card().canonicalAnswer}
+                        language={card().answerLanguage}
+                      />
+                    </p>
                     <Show when={card().acceptedAnswers.length > 1}>
-                      <p class="mt-1 text-sm text-[var(--muted)]">
-                        Also accepted: {card().acceptedAnswers.slice(1).join(' · ')}
-                      </p>
+                      <div class="mt-1 flex flex-wrap gap-x-2 text-sm text-[var(--muted)]">
+                        <span>Also accepted:</span>
+                        <For each={card().acceptedAnswers.slice(1)}>
+                          {(answer, index) => (
+                            <span>
+                              <Show when={index() > 0}>· </Show>
+                              <GermanArticleText
+                                value={answer}
+                                language={card().answerLanguage}
+                              />
+                            </span>
+                          )}
+                        </For>
+                      </div>
                     </Show>
                     <p class="mt-3 text-sm font-semibold text-[var(--muted)]">
                       Clear and retype it for Good, or submit this answer again for Again.
@@ -1934,7 +1965,12 @@ function Feedback(props: {
     <div class="mt-6 border-t border-black/10 pt-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p class="text-2xl font-black">{props.card.canonicalAnswer}</p>
+          <p class="text-2xl font-black">
+            <GermanArticleText
+              value={props.card.canonicalAnswer}
+              language={props.card.answerLanguage}
+            />
+          </p>
         </div>
         <AudioButton
           filenames={
@@ -1987,6 +2023,39 @@ function Feedback(props: {
         </div>
       </Show>
     </div>
+  )
+}
+
+const GERMAN_ARTICLE_CLASSES: Record<GermanGenderArticle, string> = {
+  der: 'text-blue-600',
+  die: 'text-red-600',
+  das: 'text-green-600',
+}
+
+function GermanArticleText(props: {
+  value: string
+  language?: AnswerLanguage
+}) {
+  const headword = createMemo(() =>
+    props.language === 'german' ? splitGermanArticle(props.value) : null,
+  )
+  return (
+    <Show when={headword()} fallback={props.value}>
+      {(parsed) => (
+        <span aria-label={props.value}>
+          <For each={parsed().articles}>
+            {(article, index) => (
+              <>
+                <Show when={index() > 0}>/</Show>
+                <span class={GERMAN_ARTICLE_CLASSES[article]}>{article}</span>
+              </>
+            )}
+          </For>
+          {' '}
+          {parsed().word}
+        </span>
+      )}
+    </Show>
   )
 }
 

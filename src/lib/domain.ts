@@ -23,6 +23,7 @@ export interface CardPlan {
   direction: Direction
   directionLabel: string
   promptField?: string
+  promptLanguage?: AnswerLanguage
   answerFields: string[]
   answerLabels?: string[]
   answerLanguages: AnswerLanguage[]
@@ -141,7 +142,9 @@ export interface StudyCard {
   direction: Direction
   directionLabel: string
   prompt: string
+  promptLanguage?: AnswerLanguage
   canonicalAnswer: string
+  answerLanguage?: AnswerLanguage
   acceptedAnswers: string[]
   answerParts?: AnswerPart[]
   contentKind?: StudyContentKind

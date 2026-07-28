@@ -8,6 +8,7 @@ import {
   germanAnswerVariants,
   matchesAnswerPart,
   matchesAnyAnswer,
+  splitGermanArticle,
   submissionDecision,
 } from '../src/lib/answers'
 
@@ -27,6 +28,25 @@ describe('German answer parsing', () => {
       'der Bekannte',
       'die Bekannte',
     ])
+  })
+
+  it('requires articles written after the noun', () => {
+    expect(germanAnswerVariants('Abend, der')).toEqual(['der Abend'])
+    expect(germanAnswerVariants('Mädchen (das)')).toEqual(['das Mädchen'])
+    expect(checkAnswer('Abend', 'Abend, der', 'german').correct).toBe(false)
+    expect(checkAnswer('der Abend', 'Abend, der', 'german').correct).toBe(true)
+  })
+
+  it('extracts gender articles for display', () => {
+    expect(splitGermanArticle('der Abend')).toEqual({
+      articles: ['der'],
+      word: 'Abend',
+    })
+    expect(splitGermanArticle('der/die Bekannte')).toEqual({
+      articles: ['der', 'die'],
+      word: 'Bekannte',
+    })
+    expect(splitGermanArticle('telefonieren')).toBeNull()
   })
 
   it('expands optional leading and suffix groups', () => {

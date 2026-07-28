@@ -77,7 +77,9 @@ const reviewCard: StudyCard = {
   direction: 'reverse',
   directionLabel: 'English → German',
   prompt: 'announcement',
+  promptLanguage: 'english',
   canonicalAnswer: 'die Ansage',
+  answerLanguage: 'german',
   acceptedAnswers: ['die Ansage'],
   sourceWord: 'die Ansage, -n',
   targetMeaning: 'announcement',
@@ -241,7 +243,41 @@ describe('application integration', () => {
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
       'der Ansage',
     )
-    expect(screen.getByText('die Ansage')).toBeTruthy()
+    const expectedAnswer = screen.getByLabelText('die Ansage')
+    expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
+  })
+
+  it('does not color article-like text on non-German cards', async () => {
+    const englishCard: StudyCard = {
+      ...reviewCard,
+      direction: 'forward',
+      prompt: 'movie title',
+      promptLanguage: 'english',
+      canonicalAnswer: 'die hard',
+      answerLanguage: 'english',
+      acceptedAnswers: ['die hard'],
+    }
+    localStorage.setItem('ankikani.activeDeck', 'German')
+    localStorage.setItem(
+      'ankikani.session.German.review',
+      JSON.stringify({
+        index: 0,
+        phase: 'correction',
+        input: 'wrong',
+        result: null,
+        cards: [englishCard],
+      }),
+    )
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [englishCard],
+    })
+    window.history.replaceState({}, '', '/reviews')
+
+    render(() => <App />)
+    await screen.findByText('Expected answer')
+    const expectedAnswer = screen.getByText('die hard')
+    expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
   })
 
   it('does not leave dashboard for a saved session', async () => {
@@ -301,7 +337,10 @@ describe('application integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Start lessons' }))
-    await screen.findByText(reviewCard.canonicalAnswer)
+    const lessonAnswer = await screen.findByLabelText(
+      reviewCard.canonicalAnswer,
+    )
+    expect(lessonAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
     expect(window.location.pathname).toBe('/lessons')
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(window.location.pathname).toBe('/lessons')

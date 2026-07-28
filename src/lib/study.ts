@@ -58,7 +58,9 @@ export function toStudyCard(
         ? `${mapping.sourceLabel} → ${mapping.targetLabel}`
         : `${mapping.targetLabel} → ${mapping.sourceLabel}`,
     prompt: direction === 'forward' ? sourceWord : targetMeaning,
+    promptLanguage: direction === 'forward' ? 'german' : 'english',
     canonicalAnswer: acceptedAnswers[0] ?? rawAnswer,
+    answerLanguage: answerIsGerman ? 'german' : 'english',
     acceptedAnswers,
     sourceWord,
     targetMeaning,
