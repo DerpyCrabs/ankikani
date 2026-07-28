@@ -299,6 +299,7 @@ describe('application integration', () => {
 
     render(() => <App />)
     await screen.findByRole('button', { name: 'Check correction' })
+    expect(mocks.dashboard).not.toHaveBeenCalled()
     expect(window.location.pathname).toBe('/reviews')
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
       'der Ansage',

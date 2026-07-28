@@ -121,6 +121,7 @@ function App() {
   let profileSyncRequest = 0
   const [dashboard, { refetch: refetchDashboard }] = createResource(
     () => {
+      if (view() !== 'dashboard') return null
       const deck = deckName()
       const config = configuration()
       return deck && config?.deckName === deck ? { deck, config } : null
@@ -311,7 +312,6 @@ function App() {
                     configuration={configuration()!}
                     onExit={() => {
                       navigate('dashboard')
-                      void refetchDashboard()
                     }}
                   />
                 </Match>
@@ -322,7 +322,6 @@ function App() {
                     configuration={configuration()!}
                     onExit={() => {
                       navigate('dashboard')
-                      void refetchDashboard()
                     }}
                   />
                 </Match>
