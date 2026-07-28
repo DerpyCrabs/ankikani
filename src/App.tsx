@@ -1,24 +1,23 @@
-import {
-  BookOpen,
-  Brain,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
-  Flame,
-  Headphones,
-  LoaderCircle,
-  RefreshCw,
-  Settings2,
-  Sparkles,
-  Volume2,
-  X,
-} from 'lucide-solid'
+import BookOpen from 'lucide-solid/icons/book-open'
+import Brain from 'lucide-solid/icons/brain'
+import Check from 'lucide-solid/icons/check'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
+import ChevronRight from 'lucide-solid/icons/chevron-right'
+import CircleAlert from 'lucide-solid/icons/circle-alert'
+import Flame from 'lucide-solid/icons/flame'
+import Headphones from 'lucide-solid/icons/headphones'
+import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import RefreshCw from 'lucide-solid/icons/refresh-cw'
+import Settings2 from 'lucide-solid/icons/settings-2'
+import Sparkles from 'lucide-solid/icons/sparkles'
+import Volume2 from 'lucide-solid/icons/volume-2'
+import X from 'lucide-solid/icons/x'
 import {
   For,
   Match,
   Show,
   Switch,
+  batch,
   createEffect,
   createMemo,
   createResource,
@@ -61,7 +60,6 @@ import type {
 type View = 'dashboard' | 'mapping' | 'lesson' | 'review'
 type StudyPhase = 'answering' | 'correction' | 'feedback'
 
-const LEGACY_ACTIVE_DECK_KEY = 'ankikani.activeDeck'
 const CONFIG_VERSION = 2
 const VIEW_PATHS: Record<View, string> = {
   dashboard: '/',
@@ -69,10 +67,6 @@ const VIEW_PATHS: Record<View, string> = {
   lesson: '/lessons',
   review: '/reviews',
 }
-const mappingKey = (deck: string) => `ankikani.mapping.${deck}`
-const legacyConfigKey = (deck: string) => `ankikani.config.v2.${deck}`
-const legacySessionKey = (deck: string, mode: string) =>
-  `ankikani.session.${deck}.${mode}`
 
 function viewFromPath(pathname: string): View {
   if (pathname === '/reviews') return 'review'
@@ -81,35 +75,35 @@ function viewFromPath(pathname: string): View {
   return 'dashboard'
 }
 
-function loadMigratedSession(scopedKey: string, legacyKey: string): string | null {
-  const scoped = localStorage.getItem(scopedKey)
-  if (scoped) return scoped
-  const legacy = localStorage.getItem(legacyKey)
-  if (legacy) localStorage.setItem(scopedKey, legacy)
-  return legacy
-}
-
 function loadConfig(deck: string, storageId: string): DeckConfig | null {
   try {
-    const scopedKey = configStorageKey(storageId)
-    const stored =
-      localStorage.getItem(scopedKey) ??
-      localStorage.getItem(legacyConfigKey(deck))
+    const stored = localStorage.getItem(configStorageKey(storageId))
     if (stored) {
       const parsed = JSON.parse(stored) as DeckConfig
-      if (parsed.version === CONFIG_VERSION) {
-        localStorage.setItem(scopedKey, stored)
-        return parsed
-      }
+      if (parsed.version === CONFIG_VERSION && parsed.deckName === deck) return parsed
     }
-    const legacy = localStorage.getItem(mappingKey(deck))
-    if (!legacy) return null
-    const migrated = configFromLegacy(deck, JSON.parse(legacy))
-    localStorage.setItem(scopedKey, JSON.stringify(migrated))
-    return migrated
+    return null
   } catch {
     return null
   }
+}
+
+async function loadCards(
+  deckName: string,
+  cardIds: number[],
+  configuration: StudyConfig,
+): Promise<StudyCard[]> {
+  const cards: StudyCard[] = []
+  for (let offset = 0; offset < cardIds.length; offset += 500) {
+    cards.push(
+      ...(await api.cards(
+        deckName,
+        cardIds.slice(offset, offset + 500),
+        configuration,
+      )),
+    )
+  }
+  return cards
 }
 
 function App() {
@@ -122,6 +116,9 @@ function App() {
   const [profile, setProfile] = createSignal<DeckProfile | null>(null)
   const [configuration, setConfiguration] = createSignal<DeckConfig | null>(null)
   const [view, setView] = createSignal<View>(viewFromPath(window.location.pathname))
+  let connectRequest = 0
+  let configureRequest = 0
+  let profileSyncRequest = 0
   const [dashboard, { refetch: refetchDashboard }] = createResource(
     () => {
       const deck = deckName()
@@ -131,30 +128,45 @@ function App() {
     ({ deck, config }) => api.dashboard(deck, config),
   )
 
-  async function connect() {
-    setConnected(null)
+  async function connect(
+    silent = false,
+    knownHealth?: Awaited<ReturnType<typeof api.health>>,
+  ) {
+    const request = ++connectRequest
+    if (!silent) setConnected(null)
     setConnectionError('')
     try {
-      const health = await api.health()
+      const health = knownHealth ?? await api.health()
       const availableDecks = await api.decks()
-      setDecks(availableDecks)
+      if (request !== connectRequest) return
       const activeProfile = health.profileName || 'Default'
       const sameProfile = profileName() === activeProfile
-      setProfileName(activeProfile)
+      if (!sameProfile) {
+        configureRequest += 1
+      }
       let selected = sameProfile
         ? deckName()
-        : localStorage.getItem(profileKey(activeProfile)) ??
-          localStorage.getItem(LEGACY_ACTIVE_DECK_KEY) ??
-          ''
+        : localStorage.getItem(profileKey(activeProfile)) ?? ''
       if (!availableDecks.some((deck) => deck.name === selected)) {
         selected =
           availableDecks.find((deck) => deck.name !== 'Default')?.name ??
           availableDecks[0]?.name ??
           ''
       }
-      setDeckName(selected)
-      setConnected(true)
+      batch(() => {
+        if (!sameProfile) {
+          setProfile(null)
+          setConfiguration(null)
+          setStorageId('')
+        }
+        setDecks(availableDecks)
+        setProfileName(activeProfile)
+        setDeckName(selected)
+        setConnected(true)
+      })
     } catch (error) {
+      if (request !== connectRequest) return
+      if (silent) return
       setConnected(false)
       setConnectionError(
         error instanceof Error ? error.message : 'Could not connect to Anki.',
@@ -164,14 +176,17 @@ function App() {
 
   async function configureDeck(selectedDeck: string) {
     if (!selectedDeck) return
+    const request = ++configureRequest
+    const activeProfile = profileName()
     setConnectionError('')
-    localStorage.setItem(profileKey(profileName()), selectedDeck)
+    localStorage.setItem(profileKey(activeProfile), selectedDeck)
     setProfile(null)
     setConfiguration(null)
     setStorageId('')
     try {
       const nextProfile = await api.profile(selectedDeck)
-      const nextStorageId = deckStorageId(profileName(), nextProfile)
+      if (request !== configureRequest || profileName() !== activeProfile) return
+      const nextStorageId = deckStorageId(activeProfile, nextProfile)
       setProfile(nextProfile)
       setStorageId(nextStorageId)
       const stored = loadConfig(selectedDeck, nextStorageId)
@@ -193,6 +208,7 @@ function App() {
         navigate('mapping', true)
       }
     } catch (error) {
+      if (request !== configureRequest || profileName() !== activeProfile) return
       setConnectionError(
         error instanceof Error ? error.message : 'Could not read deck profile.',
       )
@@ -227,8 +243,31 @@ function App() {
 
   onMount(() => {
     const onPopState = () => setView(viewFromPath(window.location.pathname))
+    const syncActiveProfile = async () => {
+      if (connected() !== true) return
+      const request = ++profileSyncRequest
+      try {
+        const health = await api.health()
+        if (request !== profileSyncRequest) return
+        const activeProfile = health.profileName || 'Default'
+        if (activeProfile !== profileName()) {
+          await connect(true, health)
+        }
+      } catch {
+        // Keep current screen during transient AnkiConnect failures.
+      }
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void syncActiveProfile()
+    }
     window.addEventListener('popstate', onPopState)
-    onCleanup(() => window.removeEventListener('popstate', onPopState))
+    window.addEventListener('focus', syncActiveProfile)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    onCleanup(() => {
+      window.removeEventListener('popstate', onPopState)
+      window.removeEventListener('focus', syncActiveProfile)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    })
     void connect()
   })
 
@@ -779,7 +818,7 @@ function DueCardsDialog(props: {
 }) {
   const [cards] = createResource(
     () => props.day.cardIds,
-    (ids) => api.cards(props.deckName, ids, props.configuration),
+    (ids) => loadCards(props.deckName, ids, props.configuration),
   )
 
   onMount(() => {
@@ -1392,10 +1431,7 @@ function LessonSession(props: {
   const restored = (() => {
     try {
       return JSON.parse(
-        loadMigratedSession(
-          teachingStorage,
-          legacySessionKey(props.deckName, 'lesson-teaching'),
-        ) ?? 'null',
+        localStorage.getItem(teachingStorage) ?? 'null',
       ) as {
         teachingIndex: number
         quizzing: boolean
@@ -1428,6 +1464,13 @@ function LessonSession(props: {
       localStorage.removeItem(teachingStorage)
       localStorage.removeItem(sessionStorageKey(props.storageId, 'lesson'))
       props.onExit()
+    } else if (
+      !payload.loading() &&
+      lesson &&
+      !quizzing() &&
+      teachingIndex() >= lesson.items.length
+    ) {
+      setTeachingIndex(0)
     }
   })
 
@@ -1459,6 +1502,7 @@ function LessonSession(props: {
             mode="lesson"
             deckName={props.deckName}
             storageId={props.storageId}
+              configuration={props.configuration}
               cards={lesson().quizCards}
               onExit={props.onExit}
               onComplete={completeLesson}
@@ -1494,6 +1538,7 @@ function ReviewSession(props: {
             mode="review"
             deckName={props.deckName}
             storageId={props.storageId}
+            configuration={props.configuration}
             cards={session().cards}
             onExit={props.onExit}
           />
@@ -1613,6 +1658,7 @@ function StudyRunner(props: {
   mode: 'lesson' | 'review'
   deckName: string
   storageId: string
+  configuration: StudyConfig
   cards: StudyCard[]
   onExit: () => void
   onComplete?: () => void
@@ -1631,10 +1677,7 @@ function StudyRunner(props: {
   const restored = (() => {
     try {
       return JSON.parse(
-        loadMigratedSession(
-          storage,
-          legacySessionKey(props.deckName, props.mode),
-        ) ?? 'null',
+        localStorage.getItem(storage) ?? 'null',
       ) as {
         index: number
         phase: StudyPhase
@@ -1648,8 +1691,8 @@ function StudyRunner(props: {
       return null
     }
   })()
-  const initialCards =
-    restored?.cards?.length ? restored.cards : props.cards
+  const restoredCards = restored?.cards?.length ? restored.cards : null
+  const initialCards = restoredCards ? [] : props.cards
   const [sessionCards, setSessionCards] = createSignal<StudyCard[]>(initialCards)
   const [index, setIndex] = createSignal(
     restored && restored.index < initialCards.length ? restored.index : 0,
@@ -1666,11 +1709,55 @@ function StudyRunner(props: {
   )
   const [saving, setSaving] = createSignal(false)
   const [error, setError] = createSignal('')
+  const [restoring, setRestoring] = createSignal(Boolean(restoredCards))
+  const [restoreError, setRestoreError] = createSignal('')
   let answerInput: HTMLInputElement | undefined
   const current = createMemo(() => sessionCards()[index()])
   const progress = createMemo(() => index() + 1)
 
+  async function restoreCards() {
+    if (!restoredCards) return
+    setRestoring(true)
+    setRestoreError('')
+    try {
+      const ids = restoredCards.map((card) => card.cardId)
+      const currentCards = await loadCards(
+        props.deckName,
+        ids,
+        props.configuration,
+      )
+      const byId = new Map(currentCards.map((card) => [card.cardId, card]))
+      const refreshed = ids
+        .map((cardId) => byId.get(cardId))
+        .filter((card): card is StudyCard => Boolean(card))
+      if (refreshed.length === ids.length) {
+        setSessionCards(refreshed)
+      } else {
+        localStorage.removeItem(storage)
+        batch(() => {
+          setSessionCards(props.cards)
+          setIndex(0)
+          setPhase('answering')
+          setInputs([])
+          setResult(null)
+          setGradeRequestId('')
+        })
+      }
+    } catch (caught) {
+      setRestoreError(
+        caught instanceof Error ? caught.message : 'Could not restore session.',
+      )
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  onMount(() => {
+    if (restoredCards) void restoreCards()
+  })
+
   createEffect(() => {
+    if (restoring() || restoreError()) return
     if (index() >= sessionCards().length) {
       localStorage.removeItem(storage)
       return
@@ -1785,6 +1872,17 @@ function StudyRunner(props: {
 
   return (
     <Show
+      when={!restoring() && !restoreError()}
+      fallback={
+        <SessionLoading
+          title="Restoring session"
+          onExit={props.onExit}
+          error={restoreError()}
+          retry={() => void restoreCards()}
+        />
+      }
+    >
+      <Show
       when={current()}
       fallback={
         <SessionComplete
@@ -1938,6 +2036,7 @@ function StudyRunner(props: {
           </article>
         </StudyShell>
       )}
+      </Show>
     </Show>
   )
 }

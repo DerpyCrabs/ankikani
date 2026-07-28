@@ -27,7 +27,7 @@ vi.mock('../src/lib/api', () => ({
 }))
 
 import App from '../src/App'
-import { profileKey } from '../src/lib/storage'
+import { deckStorageId, profileKey, sessionStorageKey } from '../src/lib/storage'
 
 const mapping: FieldMapping = {
   modelName: 'Goethe Vocab List',
@@ -179,6 +179,61 @@ describe('application integration', () => {
     expect(localStorage.getItem(profileKey('Test'))).toBe('Default')
   })
 
+  it('switches storage and deck state when Anki profile changes', async () => {
+    let activeProfile = 'First profile'
+    mocks.health.mockImplementation(async () => ({
+      connected: true,
+      version: 6,
+      endpoint: 'http://127.0.0.1:8765',
+      profileName: activeProfile,
+    }))
+    localStorage.setItem(profileKey('First profile'), 'German')
+    localStorage.setItem(profileKey('Second profile'), 'Default')
+
+    render(() => <App />)
+    const selector = await screen.findByRole('combobox', { name: 'Active deck' })
+    expect((selector as HTMLSelectElement).value).toBe('German')
+    await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German'))
+    await screen.findByRole('heading', { name: 'Lessons' })
+    mocks.health.mockClear()
+
+    activeProfile = 'Second profile'
+    mocks.health.mockResolvedValue({
+      connected: true,
+      version: 6,
+      endpoint: 'http://127.0.0.1:8765',
+      profileName: activeProfile,
+    })
+    window.dispatchEvent(new window.Event('focus'))
+
+    await waitFor(() => {
+      expect(mocks.health).toHaveBeenCalledTimes(1)
+      expect(mocks.profile).toHaveBeenCalledWith('Default')
+      expect((selector as HTMLSelectElement).value).toBe('Default')
+    })
+    await screen.findByText('Nothing to study here yet')
+    expect(mocks.profile).toHaveBeenCalledWith('Default')
+  })
+
+  it('loads oversized forecast days in endpoint-sized chunks', async () => {
+    const cardIds = Array.from({ length: 501 }, (_, index) => index + 1)
+    mocks.dashboard.mockResolvedValue({
+      ...dashboard,
+      forecast: dashboard.forecast.map((day, index) =>
+        index === 1 ? { ...day, count: cardIds.length, cardIds } : day,
+      ),
+    })
+
+    render(() => <App />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Day 1.*501/ }),
+    )
+
+    await waitFor(() => expect(mocks.cards).toHaveBeenCalledTimes(2))
+    expect(mocks.cards.mock.calls[0]?.[1]).toHaveLength(500)
+    expect(mocks.cards.mock.calls[1]?.[1]).toHaveLength(1)
+  })
+
   it('shows field mapping for an unsupported note schema', async () => {
     localStorage.setItem('ankikani.activeDeck', 'German')
     mocks.profile.mockResolvedValue({
@@ -221,20 +276,25 @@ describe('application integration', () => {
 
   it('resumes correction details without losing the typed answer', async () => {
     localStorage.setItem('ankikani.activeDeck', 'German')
+    const storage = sessionStorageKey(
+      deckStorageId('Test', supportedProfile()),
+      'review',
+    )
     localStorage.setItem(
-      'ankikani.session.German.review',
+      storage,
       JSON.stringify({
         index: 0,
         phase: 'correction',
         input: 'der Ansage',
         result: null,
-        cards: [reviewCard],
+        cards: [{ ...reviewCard, audioFilename: 'stale-profile-audio.mp3' }],
       }),
     )
     mocks.reviews.mockResolvedValue({
       deckName: 'German',
       cards: [reviewCard],
     })
+    mocks.cards.mockResolvedValue([reviewCard])
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
@@ -247,6 +307,45 @@ describe('application integration', () => {
     expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
     expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
+    expect(mocks.cards).toHaveBeenCalledWith('German', [reviewCard.cardId], expect.anything())
+    await waitFor(() => {
+      expect(localStorage.getItem(storage)).toContain('"audioFilename":"ansage.mp3"')
+      expect(localStorage.getItem(storage)).not.toContain('stale-profile-audio.mp3')
+    })
+  })
+
+  it('restores queues larger than the card endpoint limit in chunks', async () => {
+    const cards = Array.from({ length: 501 }, (_, index) => ({
+      ...reviewCard,
+      cardId: index + 1,
+      noteId: index + 1000,
+    }))
+    const storage = sessionStorageKey(
+      deckStorageId('Test', supportedProfile()),
+      'review',
+    )
+    localStorage.setItem(
+      storage,
+      JSON.stringify({
+        index: 0,
+        phase: 'answering',
+        input: '',
+        result: null,
+        cards,
+      }),
+    )
+    mocks.reviews.mockResolvedValue({ deckName: 'German', cards })
+    mocks.cards.mockImplementation(
+      async (_deck: string, cardIds: number[]) =>
+        cardIds.map((cardId) => cards[cardId - 1]),
+    )
+    window.history.replaceState({}, '', '/reviews')
+
+    render(() => <App />)
+    await screen.findByRole('button', { name: 'Check answer' })
+    expect(mocks.cards).toHaveBeenCalledTimes(2)
+    expect(mocks.cards.mock.calls[0]?.[1]).toHaveLength(500)
+    expect(mocks.cards.mock.calls[1]?.[1]).toHaveLength(1)
   })
 
   it('does not color article-like text on non-German cards', async () => {
@@ -260,8 +359,12 @@ describe('application integration', () => {
       acceptedAnswers: ['die hard'],
     }
     localStorage.setItem('ankikani.activeDeck', 'German')
+    const storage = sessionStorageKey(
+      deckStorageId('Test', supportedProfile()),
+      'review',
+    )
     localStorage.setItem(
-      'ankikani.session.German.review',
+      storage,
       JSON.stringify({
         index: 0,
         phase: 'correction',
@@ -274,6 +377,7 @@ describe('application integration', () => {
       deckName: 'German',
       cards: [englishCard],
     })
+    mocks.cards.mockResolvedValue([englishCard])
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
