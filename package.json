@@ -1,0 +1,32 @@
+{
+  "name": "ankikani",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --parallel dev:server dev:web",
+    "dev:server": "bun --watch server/index.ts",
+    "dev:web": "vite --host 0.0.0.0 --open",
+    "build": "tsc -b && vite build",
+    "start": "bun server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc -b"
+  },
+  "dependencies": {
+    "lucide-solid": "^1.27.0",
+    "solid-js": "^1.9.13"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^24.13.2",
+    "jsdom": "^30.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.10"
+  }
+}
