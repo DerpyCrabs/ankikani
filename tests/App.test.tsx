@@ -27,6 +27,7 @@ vi.mock('../src/lib/api', () => ({
 }))
 
 import App from '../src/App'
+import { profileKey } from '../src/lib/storage'
 
 const mapping: FieldMapping = {
   modelName: 'Goethe Vocab List',
@@ -62,10 +63,9 @@ const dashboard: DashboardData = {
     key: `${index}`,
     label: `${index}`,
     total: index,
-    forwardWeak: index,
-    reverseWeak: 0,
-    balanced: 0,
+    segments: { reverse: index },
   })),
+  spreadLegend: [{ key: 'reverse', label: 'English → German weaker' }],
   totalCards: 100,
   updatedAt: new Date().toISOString(),
 }
@@ -125,6 +125,7 @@ beforeEach(() => {
     connected: true,
     version: 6,
     endpoint: 'http://127.0.0.1:8765',
+    profileName: 'Test',
   })
   mocks.decks.mockReset().mockResolvedValue([
     { id: 1, name: 'Default', supported: false, modelNames: [] },
@@ -173,7 +174,7 @@ describe('application integration', () => {
     fireEvent.change(selector, { target: { value: 'Default' } })
 
     await screen.findByText('Nothing to study here yet')
-    expect(localStorage.getItem('ankikani.activeDeck')).toBe('Default')
+    expect(localStorage.getItem(profileKey('Test'))).toBe('Default')
   })
 
   it('shows field mapping for an unsupported note schema', async () => {
@@ -192,9 +193,9 @@ describe('application integration', () => {
     })
 
     render(() => <App />)
-    await screen.findByRole('heading', { name: 'Map vocabulary fields' })
-    expect(screen.getByText('Source word')).toBeTruthy()
-    expect(screen.getByText('Target meaning')).toBeTruthy()
+    await screen.findByRole('heading', { name: 'Deck setup' })
+    expect(screen.getByText('Prompt')).toBeTruthy()
+    expect(screen.getByText('Answer')).toBeTruthy()
   })
 
   it('recovers from a disconnected Anki state through Retry', async () => {
@@ -204,6 +205,7 @@ describe('application integration', () => {
         connected: true,
         version: 6,
         endpoint: 'http://127.0.0.1:8765',
+        profileName: 'Test',
       })
 
     render(() => <App />)
@@ -231,6 +233,7 @@ describe('application integration', () => {
       deckName: 'German',
       cards: [reviewCard],
     })
+    window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
     await screen.findByText('Expected answer')
@@ -239,6 +242,25 @@ describe('application integration', () => {
       'der Ansage',
     )
     expect(screen.getByText('die Ansage')).toBeTruthy()
+  })
+
+  it('does not leave dashboard for a saved session', async () => {
+    localStorage.setItem('ankikani.activeDeck', 'German')
+    localStorage.setItem(
+      'ankikani.session.German.review',
+      JSON.stringify({
+        index: 0,
+        phase: 'correction',
+        input: 'der Ansage',
+        result: null,
+        cards: [reviewCard],
+      }),
+    )
+
+    render(() => <App />)
+    await screen.findByRole('heading', { name: 'Lessons' })
+    expect(window.location.pathname).toBe('/')
+    expect(screen.queryByText('Expected answer')).toBeNull()
   })
 
   it('uses dedicated routes for reviews and lessons', async () => {
@@ -279,7 +301,55 @@ describe('application integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Start lessons' }))
-    await screen.findByText(reviewCard.sourceWord)
+    await screen.findByText(reviewCard.canonicalAnswer)
     expect(window.location.pathname).toBe('/lessons')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(window.location.pathname).toBe('/lessons')
+  })
+
+  it('retries a failed session load without leaving the route', async () => {
+    mocks.reviews
+      .mockRejectedValueOnce(new Error('AnkiConnect connection was interrupted.'))
+      .mockResolvedValueOnce({ deckName: 'German', cards: [reviewCard] })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    expect(await screen.findByText('Could not start session')).toBeTruthy()
+    expect(window.location.pathname).toBe('/reviews')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByText(reviewCard.prompt)
+    expect(window.location.pathname).toBe('/reviews')
+  })
+
+  it('preserves answer and queue position when grading fails', async () => {
+    mocks.reviews.mockResolvedValue({ deckName: 'German', cards: [reviewCard] })
+    mocks.answer
+      .mockRejectedValueOnce(new Error('AnkiConnect connection was interrupted.'))
+      .mockResolvedValueOnce({ saved: true, cardId: reviewCard.cardId, ease: 3 })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Answer and queue position are preserved',
+    )
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
+      reviewCard.canonicalAnswer,
+    )
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Continue' })
+    expect(screen.getByLabelText('Keyboard shortcuts').textContent).toContain('J')
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    play.mockClear()
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'r' })
+    expect(play).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'j' })
+    expect(play).toHaveBeenCalledOnce()
   })
 })

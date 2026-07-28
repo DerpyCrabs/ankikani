@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   checkAnswer,
+  answerVariants,
+  audioFilenames,
   englishAnswerVariants,
   foldAnswer,
   germanAnswerVariants,
+  matchesAnswerPart,
   matchesAnyAnswer,
   submissionDecision,
 } from '../src/lib/answers'
@@ -74,6 +77,54 @@ describe('English answer parsing', () => {
     expect(
       matchesAnyAnswer('details', ['information', 'details'], 'english'),
     ).toBe(true)
+  })
+})
+
+describe('generic answer and media parsing', () => {
+  it('uses configured separators without splitting ordinary commas', () => {
+    expect(answerVariants('laufen | rennen', 'german', ['|'])).toEqual([
+      'laufen',
+      'rennen',
+    ])
+    expect(answerVariants('der Käse, -', 'german')).toEqual(['der Käse'])
+  })
+
+  it('accepts unordered multi-value answers in any order', () => {
+    const part = {
+      id: 'forms',
+      label: 'Forms',
+      canonicalAnswer: 'gehen; ging; gegangen',
+      acceptedAnswers: [],
+      language: 'german' as const,
+      required: true,
+      mode: 'unordered' as const,
+      separators: [';'],
+      items: [
+        { canonicalAnswer: 'gehen', acceptedAnswers: ['gehen'] },
+        { canonicalAnswer: 'ging', acceptedAnswers: ['ging'] },
+        { canonicalAnswer: 'gegangen', acceptedAnswers: ['gegangen'] },
+      ],
+    }
+    expect(matchesAnswerPart('gegangen; gehen; ging', part)).toBe(true)
+    expect(matchesAnswerPart('gehen; ging', part)).toBe(false)
+  })
+
+  it('allows blank optional answer parts', () => {
+    expect(matchesAnswerPart('', {
+      id: 'note',
+      label: 'Note',
+      canonicalAnswer: 'formal',
+      acceptedAnswers: ['formal'],
+      language: 'plain',
+      required: false,
+      mode: 'single',
+    })).toBe(true)
+  })
+
+  it('extracts every safe audio filename', () => {
+    expect(audioFilenames(
+      '[sound:first.mp3] [sound:second.ogg] [sound:../unsafe.mp3]',
+    )).toEqual(['first.mp3', 'second.ogg'])
   })
 })
 

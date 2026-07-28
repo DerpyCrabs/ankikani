@@ -4,6 +4,7 @@ import type {
   Direction,
   FieldMapping,
   StudyCard,
+  SpreadLegendItem,
 } from './domain'
 import {
   audioFilename,
@@ -120,14 +121,24 @@ export function stageIndex(card: Pick<StudyCard, 'interval' | 'type' | 'queue'>)
   return 7
 }
 
-export function activeSpread(cards: StudyCard[]): ActiveStage[] {
+function contentLabel(card: StudyCard): string {
+  if (card.contentKind === 'audio') return 'Listening'
+  if (card.contentKind === 'cloze') return 'Cloze'
+  if (card.contentKind === 'multi') return 'Multi-part'
+  if (card.contentKind === 'image') return 'Image recall'
+  return card.directionLabel
+}
+
+export function activeSpread(cards: StudyCard[]): {
+  stages: ActiveStage[]
+  legend: SpreadLegendItem[]
+} {
   const stages: ActiveStage[] = STAGES.map((stage) => ({
     ...stage,
     total: 0,
-    forwardWeak: 0,
-    reverseWeak: 0,
-    balanced: 0,
+    segments: {},
   }))
+  const legend = new Map<string, string>()
   const notes = new Map<number, StudyCard[]>()
 
   for (const card of cards.filter((item) => item.type !== 0)) {
@@ -137,19 +148,45 @@ export function activeSpread(cards: StudyCard[]): ActiveStage[] {
   }
 
   for (const noteCards of notes.values()) {
-    const forward = noteCards.find((card) => card.direction === 'forward')
-    const reverse = noteCards.find((card) => card.direction === 'reverse')
-    const forwardStage = forward ? stageIndex(forward) : 0
-    const reverseStage = reverse ? stageIndex(reverse) : 0
+    const forwardStages = noteCards
+      .filter((card) => card.direction === 'forward')
+      .map(stageIndex)
+    const reverseStages = noteCards
+      .filter((card) => card.direction === 'reverse')
+      .map(stageIndex)
+    const forwardStage = forwardStages.length ? Math.min(...forwardStages) : null
+    const reverseStage = reverseStages.length ? Math.min(...reverseStages) : null
+    if (forwardStage === null || reverseStage === null) {
+      const onlyStage = forwardStage ?? reverseStage
+      if (onlyStage === null) continue
+      const onlyCard = noteCards[0]
+      const label = contentLabel(onlyCard)
+      const key = `content:${label}`
+      stages[onlyStage].total += 1
+      stages[onlyStage].segments[key] =
+        (stages[onlyStage].segments[key] ?? 0) + 1
+      legend.set(key, label)
+      continue
+    }
     const weakestStage = Math.min(forwardStage, reverseStage)
     const stage = stages[weakestStage]
     stage.total += 1
-    if (forwardStage < reverseStage) stage.forwardWeak += 1
-    else if (reverseStage < forwardStage) stage.reverseWeak += 1
-    else stage.balanced += 1
+    const weaker =
+      forwardStage < reverseStage
+        ? noteCards.find((card) => card.direction === 'forward')
+        : reverseStage < forwardStage
+          ? noteCards.find((card) => card.direction === 'reverse')
+          : null
+    const label = weaker ? `${contentLabel(weaker)} weaker` : 'Balanced'
+    const key = weaker ? `weak:${label}` : 'balanced'
+    stage.segments[key] = (stage.segments[key] ?? 0) + 1
+    legend.set(key, label)
   }
 
-  return stages
+  return {
+    stages,
+    legend: [...legend].map(([key, label]) => ({ key, label })),
+  }
 }
 
 function localDateKey(timestamp: number): string {

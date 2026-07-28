@@ -89,23 +89,23 @@ button:disabled {
 
 .button-primary {
   min-height: 46px;
-  border: 2px solid var(--ink);
+  border: 1px solid rgb(182 62 54 / 18%);
   background: var(--coral);
   color: white;
   padding: 0.7rem 1.2rem;
-  box-shadow: 0 4px 0 var(--ink);
+  box-shadow: 0 5px 14px rgb(182 62 54 / 20%);
 }
 
 .button-primary:hover:not(:disabled),
 .button-ink:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 0 var(--ink);
+  box-shadow: 0 8px 20px rgb(25 34 58 / 18%);
 }
 
 .button-primary:active:not(:disabled),
 .button-ink:active:not(:disabled) {
-  transform: translateY(3px);
-  box-shadow: 0 1px 0 var(--ink);
+  transform: translateY(1px);
+  box-shadow: 0 3px 9px rgb(25 34 58 / 14%);
 }
 
 .button-primary:disabled,
@@ -135,11 +135,11 @@ button:disabled {
 
 .button-ink {
   min-height: 46px;
-  border: 2px solid var(--ink);
+  border: 1px solid rgb(25 34 58 / 20%);
   background: var(--ink);
   color: white;
   padding: 0.7rem 1.2rem;
-  box-shadow: 0 4px 0 rgb(25 34 58 / 35%);
+  box-shadow: 0 5px 14px rgb(25 34 58 / 16%);
 }
 
 .button-quiet {
@@ -198,6 +198,21 @@ button:disabled {
   box-shadow: 0 0 0 3px rgb(111 88 201 / 14%);
 }
 
+:where(a, button, input, select, summary, [tabindex]):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--violet) 70%, transparent);
+  outline-offset: 3px;
+}
+
+kbd {
+  border: 1px solid rgb(25 34 58 / 18%);
+  border-radius: 5px;
+  background: white;
+  padding: 0.08rem 0.32rem;
+  color: var(--ink);
+  font-family: inherit;
+  font-weight: 850;
+}
+
 @media (max-width: 640px) {
   .card-shell {
     border-radius: 20px;
@@ -212,5 +227,23 @@ button:disabled {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #41485b;
+    --coral-dark: #8e241d;
+    --mint-dark: #075545;
+  }
+
+  .card-shell,
+  .field-control,
+  .button-primary,
+  .button-soft-primary,
+  .button-ink,
+  .button-quiet,
+  .icon-button {
+    border-color: var(--ink);
   }
 }

@@ -8,14 +8,20 @@ import type {
   LessonItem,
   LessonPayload,
   SessionPayload,
+  StudyConfig,
   StudyCard,
 } from '../src/lib/domain'
+import {
+  adaptCard,
+  buildDeckConfig,
+  normalizeConfig,
+} from '../src/lib/adapters'
 import {
   activeSpread,
   buildStudyQueue,
   calculateStreak,
-  toStudyCard,
 } from '../src/lib/study'
+import { deckSchemaFingerprint } from '../src/lib/storage'
 import { ankiInvoke, ankiMulti } from './anki'
 
 interface DeckStats {
@@ -84,21 +90,30 @@ async function cardsInfo(cardIds: number[]): Promise<AnkiCardInfo[]> {
   return ankiInvoke<AnkiCardInfo[]>('cardsInfo', { cards: cardIds })
 }
 
-async function mappedCards(cardIds: number[], mapping: FieldMapping) {
+async function mappedCards(
+  cardIds: number[],
+  deckName: string,
+  configuration: StudyConfig,
+) {
+  const config = normalizeConfig(deckName, configuration)
   return (await cardsInfo(cardIds))
-    .filter((card) => card.cardId && card.modelName === mapping.modelName)
-    .map((card) => toStudyCard(card, mapping))
+    .map((card) => adaptCard(card, config))
+    .filter((card): card is StudyCard => Boolean(card))
 }
 
 export async function listDecks(): Promise<DeckSummary[]> {
   const decks = await ankiInvoke<Record<string, number>>('deckNamesAndIds')
-  return Object.entries(decks)
+  const entries = Object.entries(decks)
+  return entries
     .filter(([name]) => !name.includes('::'))
     .map(([name, id]) => ({
       id,
       name,
-      supported: name === 'Goethe Institute A1 Wordlist',
-      modelNames: name === 'Goethe Institute A1 Wordlist' ? ['Goethe Vocab List'] : [],
+      supported: true,
+      modelNames: [],
+      subdeckCount: entries.filter(([candidate]) =>
+        candidate.startsWith(`${name}::`),
+      ).length,
     }))
     .toSorted((a, b) => a.name.localeCompare(b.name))
 }
@@ -113,7 +128,12 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
       },
     })),
   )
-  const modelNames = allModelNames.filter((_, index) => matches[index]?.length)
+  const noteIdsByModel = new Map(
+    allModelNames.map((modelName, index) => [modelName, matches[index] ?? []]),
+  )
+  const modelNames = allModelNames.filter(
+    (modelName) => noteIdsByModel.get(modelName)?.length,
+  )
   const modelDetails = await ankiMulti<
     Array<string[] | Record<string, { Front: string; Back: string }>>
   >(
@@ -132,8 +152,39 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
       { Front: string; Back: string }
     >
   })
+  const sampleIds = await ankiMulti<number[][]>(
+    modelNames.map((modelName) => ({
+      action: 'findCards',
+      params: {
+        query: `${quotedDeck(deckName)} note:"${modelName.replaceAll('"', '\\"')}"`,
+      },
+    })),
+  )
+  const samplesByModel: DeckProfile['samplesByModel'] = {}
+  await Promise.all(
+    modelNames.map(async (modelName, index) => {
+      const candidates = await cardsInfo((sampleIds[index] ?? []).slice(0, 40))
+      const notes = new Set<number>()
+      samplesByModel[modelName] = candidates.filter((card) => {
+        if (notes.has(card.note) || notes.size >= 8) return false
+        notes.add(card.note)
+        return true
+      })
+    }),
+  )
+  const detected = buildDeckConfig(
+    deckName,
+    modelNames.map((modelName) => ({
+      modelName,
+      fields: fieldsByModel[modelName] ?? [],
+      templateCount: Object.keys(templatesByModel[modelName] ?? {}).length,
+      templates: templatesByModel[modelName] ?? {},
+      noteCount: noteIdsByModel.get(modelName)?.length ?? 0,
+      samples: samplesByModel[modelName] ?? [],
+    })),
+  )
 
-  return {
+  const profile = {
     deckName,
     modelNames,
     fieldsByModel,
@@ -141,6 +192,13 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
     suggestedMapping: modelNames.includes(GOETHE_MAPPING.modelName)
       ? GOETHE_MAPPING
       : null,
+    suggestedConfig: detected.config,
+    compatibility: detected.compatibility,
+    samplesByModel,
+  } satisfies DeckProfile
+  return {
+    ...profile,
+    schemaFingerprint: deckSchemaFingerprint(profile),
   }
 }
 
@@ -196,16 +254,43 @@ function reviewEase(review: ReviewLog): number {
 
 export async function getDashboard(
   deckName: string,
-  mapping: FieldMapping,
+  configuration: StudyConfig,
 ): Promise<DashboardData> {
   const deckQuery = quotedDeck(deckName)
-  const [stats, allCardIds, reviewLog, week] = await Promise.all([
+  const [stats, allCardIds, reviewLog, week, dueIds] = await Promise.all([
     deckStats(deckName),
     ankiInvoke<number[]>('findCards', { query: deckQuery }),
     ankiInvoke<ReviewLog[]>('cardReviews', { deck: deckName, startID: 0 }),
     forecast(deckName),
+    ankiMulti<[number[], number[]]>([
+      {
+        action: 'findCards',
+        params: {
+          query: `${deckQuery} is:learn -is:suspended -is:buried`,
+        },
+      },
+      {
+        action: 'findCards',
+        params: {
+          query: `${deckQuery} is:due -is:new -is:learn -is:suspended -is:buried`,
+        },
+      },
+    ]),
   ])
-  const allCards = await mappedCards(allCardIds, mapping)
+  const allCards = await mappedCards(allCardIds, deckName, configuration)
+  const enabledCardIds = new Set(allCards.map((card) => card.cardId))
+  const visibleWeek = week.map((day) => {
+    const cardIds = day.cardIds.filter((cardId) => enabledCardIds.has(cardId))
+    return { ...day, cardIds, count: cardIds.length }
+  })
+  const learningDue = dueIds[0]
+    .slice(0, stats.learn_count)
+    .filter((cardId) => enabledCardIds.has(cardId))
+    .length
+  const reviewsDue = dueIds[1]
+    .slice(0, stats.review_count)
+    .filter((cardId) => enabledCardIds.has(cardId))
+    .length
   const now = new Date()
   const yesterday = new Date(now)
   yesterday.setDate(yesterday.getDate() - 1)
@@ -218,30 +303,32 @@ export async function getDashboard(
   const newNoteIds = new Set(
     allCards.filter((card) => card.type === 0 && card.queue === 0).map((card) => card.noteId),
   )
+  const spread = activeSpread(allCards)
 
   return {
     deckName,
     lessonsAvailable: Math.min(
       newNoteIds.size,
-      Math.floor(stats.new_count / 2),
+      stats.new_count,
     ),
-    reviewsDue: stats.review_count + stats.learn_count,
-    learning: stats.learn_count,
+    reviewsDue: reviewsDue + learningDue,
+    learning: learningDue,
     completedToday: reviewedOn(reviewLog, now),
     completedYesterday: reviewedOn(reviewLog, yesterday),
     currentStreak: streak.current,
     bestStreak: streak.best,
-    next24Hours: week[0]?.count ?? 0,
-    forecast: week,
-    activeSpread: activeSpread(allCards),
-    totalCards: stats.total_in_deck,
+    next24Hours: visibleWeek[0]?.count ?? 0,
+    forecast: visibleWeek,
+    activeSpread: spread.stages,
+    spreadLegend: spread.legend,
+    totalCards: allCards.length,
     updatedAt: new Date().toISOString(),
   }
 }
 
 export async function getReviewSession(
   deckName: string,
-  mapping: FieldMapping,
+  configuration: StudyConfig,
 ): Promise<SessionPayload> {
   const stats = await deckStats(deckName)
   const deckQuery = quotedDeck(deckName)
@@ -265,24 +352,26 @@ export async function getReviewSession(
   ]
   return {
     deckName,
-    cards: buildStudyQueue(await mappedCards(selectedIds, mapping)),
+    cards: buildStudyQueue(
+      await mappedCards(selectedIds, deckName, configuration),
+    ),
   }
 }
 
 export async function getLessonSession(
   deckName: string,
-  mapping: FieldMapping,
+  configuration: StudyConfig,
 ): Promise<LessonPayload> {
   const stats = await deckStats(deckName)
-  const capacity = Math.min(5, Math.floor(stats.new_count / 2))
-  if (capacity <= 0) return { deckName, items: [], quizCards: [] }
+  if (stats.new_count <= 0) return { deckName, items: [], quizCards: [] }
 
   const newIds = await ankiInvoke<number[]>('findCards', {
     query: `${quotedDeck(deckName)} is:new -is:suspended -is:buried`,
   })
   const candidates = await mappedCards(
-    newIds.slice(0, Math.max(50, stats.new_count * 3)),
-    mapping,
+    newIds.slice(0, Math.max(200, stats.new_count * 10)),
+    deckName,
+    configuration,
   )
   const grouped = new Map<number, StudyCard[]>()
   for (const card of candidates) {
@@ -291,15 +380,34 @@ export async function getLessonSession(
     grouped.set(card.noteId, group)
   }
 
-  const completePairs = [...grouped.values()]
-    .filter(
-      (cards) =>
-        cards.some((card) => card.direction === 'forward') &&
-        cards.some((card) => card.direction === 'reverse'),
-    )
-    .slice(0, capacity)
+  const groupsByModel = new Map<string, StudyCard[][]>()
+  for (const cards of grouped.values()) {
+    const available = cards.filter((card) => card.type === 0 && card.queue === 0)
+    if (!available.length) continue
+    const queue = groupsByModel.get(available[0].modelName) ?? []
+    queue.push(available)
+    groupsByModel.set(available[0].modelName, queue)
+  }
 
-  const items: LessonItem[] = completePairs.map((cards) => {
+  const selectedGroups: StudyCard[][] = []
+  let selectedCardCount = 0
+  while (selectedGroups.length < 5 && groupsByModel.size) {
+    let selectedThisPass = false
+    for (const [modelName, queue] of groupsByModel) {
+      const available = queue.shift()
+      if (!queue.length) groupsByModel.delete(modelName)
+      if (!available) continue
+      if (selectedCardCount + available.length <= stats.new_count) {
+        selectedGroups.push(available)
+        selectedCardCount += available.length
+        selectedThisPass = true
+      }
+      if (selectedGroups.length >= 5) break
+    }
+    if (!selectedThisPass) break
+  }
+
+  const items: LessonItem[] = selectedGroups.map((cards) => {
     const card = cards[0]
     return {
       noteId: card.noteId,
@@ -310,6 +418,12 @@ export async function getLessonSession(
       note: card.note,
       audioFilename: card.audioFilename,
       cards,
+      contentKind: card.contentKind,
+      promptAudioFilename: card.promptAudioFilename,
+      promptAudioFilenames: card.promptAudioFilenames,
+      audioFilenames: card.audioFilenames,
+      imageFilenames: card.promptImageFilenames,
+      details: card.details,
     }
   })
 
@@ -322,17 +436,53 @@ export async function getLessonSession(
 
 export async function getCards(
   cardIds: number[],
-  mapping: FieldMapping,
+  deckName: string,
+  configuration: StudyConfig,
 ): Promise<StudyCard[]> {
-  return mappedCards(cardIds, mapping)
+  return mappedCards(cardIds, deckName, configuration)
 }
 
-export async function answerCard(cardId: number, ease: 1 | 3) {
-  const result = await ankiInvoke<boolean[]>('answerCards', {
-    answers: [{ cardId, ease }],
-  })
-  if (!result[0]) throw new Error('Anki did not accept the card grade.')
-  return { saved: true, cardId, ease }
+const answerRequests = new Map<
+  string,
+  { cardId: number; ease: 1 | 3; result: Promise<{ saved: true; cardId: number; ease: 1 | 3 }> }
+>()
+
+export async function answerCard(
+  cardId: number,
+  ease: 1 | 3,
+  requestId?: string,
+) {
+  if (requestId) {
+    const existing = answerRequests.get(requestId)
+    if (existing) {
+      if (existing.cardId !== cardId || existing.ease !== ease) {
+        throw new Error('Answer request ID was reused for a different grade.')
+      }
+      return existing.result
+    }
+  }
+
+  const result = (async () => {
+    const accepted = await ankiInvoke<boolean[]>('answerCards', {
+      answers: [{ cardId, ease }],
+    })
+    if (!accepted[0]) throw new Error('Anki did not accept the card grade.')
+    return { saved: true as const, cardId, ease }
+  })()
+
+  if (requestId) {
+    answerRequests.set(requestId, { cardId, ease, result })
+    if (answerRequests.size > 2_000) {
+      const oldest = answerRequests.keys().next().value
+      if (oldest) answerRequests.delete(oldest)
+    }
+  }
+  try {
+    return await result
+  } catch (error) {
+    if (requestId) answerRequests.delete(requestId)
+    throw error
+  }
 }
 
 export async function mediaFile(filename: string) {

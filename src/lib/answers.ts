@@ -1,4 +1,8 @@
-import type { AnswerResult } from './domain'
+import type {
+  AnswerLanguage as DomainAnswerLanguage,
+  AnswerPart,
+  AnswerResult,
+} from './domain'
 
 export type AnswerLanguage = 'german' | 'english'
 export type AnswerAttemptPhase = 'answering' | 'correction'
@@ -21,7 +25,32 @@ export function stripAudio(value: string): string {
 }
 
 export function audioFilename(value: string): string | null {
-  return value.match(/\[sound:([^\]]+)\]/iu)?.[1] ?? null
+  return audioFilenames(value)[0] ?? null
+}
+
+export function audioFilenames(value: string): string[] {
+  return unique(
+    [...value.matchAll(/\[sound:([^\]]+)\]/giu)]
+      .map((match) => match[1])
+      .filter(
+        (filename) =>
+          filename &&
+          !filename.includes('/') &&
+          !filename.includes('\\'),
+      ),
+  )
+}
+
+export function imageFilenames(value: string): string[] {
+  return [...value.matchAll(/<img[^>]+src=["']([^"']+)["'][^>]*>/giu)]
+    .map((match) => match[1])
+    .filter(
+      (filename) =>
+        filename &&
+        !filename.includes('/') &&
+        !filename.includes('\\') &&
+        !filename.startsWith('data:'),
+    )
 }
 
 function cleanupSource(value: string): string {
@@ -99,6 +128,24 @@ export function englishAnswerVariants(raw: string): string[] {
   return unique(alternatives.flatMap(expandOptionalGroups))
 }
 
+export function answerVariants(
+  raw: string,
+  language: DomainAnswerLanguage,
+  separators?: string[],
+): string[] {
+  if (!separators?.length) {
+    if (language === 'german') return germanAnswerVariants(raw)
+    if (language === 'english') return englishAnswerVariants(raw)
+    const normalized = cleanupSource(raw)
+    return normalized ? [normalized] : []
+  }
+  const alternatives = splitTopLevel(
+    cleanupSource(raw),
+    new Set(separators.flatMap((separator) => [...separator])),
+  )
+  return unique(alternatives.flatMap(expandOptionalGroups))
+}
+
 export function foldAnswer(value: string, german = false): string {
   let folded = cleanupSource(value).toLocaleLowerCase()
 
@@ -146,6 +193,40 @@ export function matchesAnyAnswer(
   return acceptedAnswers.some(
     (answer) => foldAnswer(answer, language === 'german') === foldedInput,
   )
+}
+
+export function matchesAnswerPart(input: string, part: AnswerPart): boolean {
+  if (!part.required && !input.trim()) return true
+  if (part.mode !== 'unordered' || !part.items?.length) {
+    return matchesAnyAnswer(
+      input,
+      part.acceptedAnswers,
+      part.language === 'plain' ? 'english' : part.language,
+    )
+  }
+
+  const separators = part.separators?.length
+    ? part.separators
+    : [',', ';', '/', '\n']
+  const provided = splitTopLevel(
+    cleanupSource(input),
+    new Set(separators.flatMap((separator) => [...separator])),
+  )
+  if (provided.length !== part.items.length) return false
+
+  const remaining = [...provided]
+  return part.items.every((item) => {
+    const index = remaining.findIndex((candidate) =>
+      matchesAnyAnswer(
+        candidate,
+        item.acceptedAnswers,
+        part.language === 'plain' ? 'english' : part.language,
+      ),
+    )
+    if (index < 0) return false
+    remaining.splice(index, 1)
+    return true
+  })
 }
 
 export function submissionDecision(

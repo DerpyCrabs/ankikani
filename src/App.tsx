@@ -27,21 +27,38 @@ import {
   onMount,
 } from 'solid-js'
 import { api } from './lib/api'
-import { submissionDecision } from './lib/answers'
+import { matchesAnswerPart } from './lib/answers'
+import {
+  adaptCard,
+  configFromLegacy,
+  reconcileConfig,
+} from './lib/adapters'
+import {
+  configStorageKey,
+  deckStorageId,
+  profileKey,
+  sessionStorageKey,
+} from './lib/storage'
 import type {
+  AnswerLanguage,
+  AnswerMode,
+  AnswerPart,
   DashboardData,
+  DeckConfig,
   DeckProfile,
   DeckSummary,
-  FieldMapping,
   ForecastDay,
   LessonItem,
+  ModelConfig,
+  StudyConfig,
   StudyCard,
 } from './lib/domain'
 
 type View = 'dashboard' | 'mapping' | 'lesson' | 'review'
 type StudyPhase = 'answering' | 'correction' | 'feedback'
 
-const ACTIVE_DECK_KEY = 'ankikani.activeDeck'
+const LEGACY_ACTIVE_DECK_KEY = 'ankikani.activeDeck'
+const CONFIG_VERSION = 2
 const VIEW_PATHS: Record<View, string> = {
   dashboard: '/',
   mapping: '/fields',
@@ -49,7 +66,8 @@ const VIEW_PATHS: Record<View, string> = {
   review: '/reviews',
 }
 const mappingKey = (deck: string) => `ankikani.mapping.${deck}`
-const sessionKey = (deck: string, mode: string) =>
+const legacyConfigKey = (deck: string) => `ankikani.config.v2.${deck}`
+const legacySessionKey = (deck: string, mode: string) =>
   `ankikani.session.${deck}.${mode}`
 
 function viewFromPath(pathname: string): View {
@@ -59,47 +77,32 @@ function viewFromPath(pathname: string): View {
   return 'dashboard'
 }
 
-function resumableView(deck: string): View {
-  const lessonSession = sessionKey(deck, 'lesson')
-  const reviewSession = sessionKey(deck, 'review')
-  if (
-    hasActiveStudySession(lessonSession) ||
-    localStorage.getItem(sessionKey(deck, 'lesson-teaching'))
-  ) {
-    return 'lesson'
-  }
-  if (hasActiveStudySession(reviewSession)) return 'review'
-  return 'dashboard'
+function loadMigratedSession(scopedKey: string, legacyKey: string): string | null {
+  const scoped = localStorage.getItem(scopedKey)
+  if (scoped) return scoped
+  const legacy = localStorage.getItem(legacyKey)
+  if (legacy) localStorage.setItem(scopedKey, legacy)
+  return legacy
 }
 
-function hasActiveStudySession(key: string): boolean {
-  const stored = localStorage.getItem(key)
-  if (!stored) return false
+function loadConfig(deck: string, storageId: string): DeckConfig | null {
   try {
-    const session = JSON.parse(stored) as {
-      index?: number
-      cards?: unknown[]
+    const scopedKey = configStorageKey(storageId)
+    const stored =
+      localStorage.getItem(scopedKey) ??
+      localStorage.getItem(legacyConfigKey(deck))
+    if (stored) {
+      const parsed = JSON.parse(stored) as DeckConfig
+      if (parsed.version === CONFIG_VERSION) {
+        localStorage.setItem(scopedKey, stored)
+        return parsed
+      }
     }
-    if (
-      Array.isArray(session.cards) &&
-      typeof session.index === 'number' &&
-      session.index >= session.cards.length
-    ) {
-      localStorage.removeItem(key)
-      return false
-    }
-    return true
-  } catch {
-    localStorage.removeItem(key)
-    return false
-  }
-}
-
-function loadMapping(deck: string): FieldMapping | null {
-  const stored = localStorage.getItem(mappingKey(deck))
-  if (!stored) return null
-  try {
-    return JSON.parse(stored) as FieldMapping
+    const legacy = localStorage.getItem(mappingKey(deck))
+    if (!legacy) return null
+    const migrated = configFromLegacy(deck, JSON.parse(legacy))
+    localStorage.setItem(scopedKey, JSON.stringify(migrated))
+    return migrated
   } catch {
     return null
   }
@@ -109,37 +112,43 @@ function App() {
   const [connected, setConnected] = createSignal<boolean | null>(null)
   const [connectionError, setConnectionError] = createSignal('')
   const [decks, setDecks] = createSignal<DeckSummary[]>([])
-  const [deckName, setDeckName] = createSignal(
-    localStorage.getItem(ACTIVE_DECK_KEY) ?? '',
-  )
+  const [profileName, setProfileName] = createSignal('')
+  const [deckName, setDeckName] = createSignal('')
+  const [storageId, setStorageId] = createSignal('')
   const [profile, setProfile] = createSignal<DeckProfile | null>(null)
-  const [mapping, setMapping] = createSignal<FieldMapping | null>(null)
+  const [configuration, setConfiguration] = createSignal<DeckConfig | null>(null)
   const [view, setView] = createSignal<View>(viewFromPath(window.location.pathname))
   const [dashboard, { refetch: refetchDashboard }] = createResource(
     () => {
       const deck = deckName()
-      const selectedMapping = mapping()
-      return deck && selectedMapping ? { deck, mapping: selectedMapping } : null
+      const config = configuration()
+      return deck && config?.deckName === deck ? { deck, config } : null
     },
-    ({ deck, mapping: selectedMapping }) =>
-      api.dashboard(deck, selectedMapping),
+    ({ deck, config }) => api.dashboard(deck, config),
   )
 
   async function connect() {
     setConnected(null)
     setConnectionError('')
     try {
-      await api.health()
+      const health = await api.health()
       const availableDecks = await api.decks()
       setDecks(availableDecks)
-      let selected = deckName()
+      const activeProfile = health.profileName || 'Default'
+      const sameProfile = profileName() === activeProfile
+      setProfileName(activeProfile)
+      let selected = sameProfile
+        ? deckName()
+        : localStorage.getItem(profileKey(activeProfile)) ??
+          localStorage.getItem(LEGACY_ACTIVE_DECK_KEY) ??
+          ''
       if (!availableDecks.some((deck) => deck.name === selected)) {
         selected =
           availableDecks.find((deck) => deck.name !== 'Default')?.name ??
           availableDecks[0]?.name ??
           ''
-        setDeckName(selected)
       }
+      setDeckName(selected)
       setConnected(true)
     } catch (error) {
       setConnected(false)
@@ -151,23 +160,30 @@ function App() {
 
   async function configureDeck(selectedDeck: string) {
     if (!selectedDeck) return
-    localStorage.setItem(ACTIVE_DECK_KEY, selectedDeck)
+    setConnectionError('')
+    localStorage.setItem(profileKey(profileName()), selectedDeck)
     setProfile(null)
-    setMapping(null)
-    const requestedView = viewFromPath(window.location.pathname)
-    navigate(
-      requestedView === 'dashboard' ? resumableView(selectedDeck) : requestedView,
-      true,
-    )
+    setConfiguration(null)
+    setStorageId('')
     try {
       const nextProfile = await api.profile(selectedDeck)
+      const nextStorageId = deckStorageId(profileName(), nextProfile)
       setProfile(nextProfile)
-      const stored = loadMapping(selectedDeck)
-      const nextMapping = stored ?? nextProfile.suggestedMapping
-      if (nextMapping) {
-        setMapping(nextMapping)
-        if (!stored) {
-          localStorage.setItem(mappingKey(selectedDeck), JSON.stringify(nextMapping))
+      setStorageId(nextStorageId)
+      const stored = loadConfig(selectedDeck, nextStorageId)
+      const suggested =
+        nextProfile.suggestedConfig ??
+        (nextProfile.suggestedMapping
+          ? configFromLegacy(selectedDeck, nextProfile.suggestedMapping)
+          : null)
+      const nextConfig = reconcileConfig(stored, suggested)
+      if (nextConfig) {
+        setConfiguration(nextConfig)
+        if (!stored || JSON.stringify(stored) !== JSON.stringify(nextConfig)) {
+          localStorage.setItem(
+            configStorageKey(nextStorageId),
+            JSON.stringify(nextConfig),
+          )
         }
       } else if (nextProfile.modelNames.length) {
         navigate('mapping', true)
@@ -191,9 +207,13 @@ function App() {
     setView(nextView)
   }
 
-  function saveMapping(nextMapping: FieldMapping) {
-    localStorage.setItem(mappingKey(deckName()), JSON.stringify(nextMapping))
-    setMapping(nextMapping)
+  function saveConfiguration(nextConfig: DeckConfig) {
+    const customized = { ...nextConfig, customized: true }
+    localStorage.setItem(
+      configStorageKey(storageId()),
+      JSON.stringify(customized),
+    )
+    setConfiguration(customized)
     navigate('dashboard')
   }
 
@@ -221,7 +241,12 @@ function App() {
         <main class="mx-auto w-full max-w-[1440px] px-4 pb-16 pt-7 sm:px-6 lg:px-10">
           <Show
             when={profile()}
-            fallback={<DeckLoading />}
+            fallback={
+              <DeckLoading
+                error={connectionError()}
+                retry={() => void configureDeck(deckName())}
+              />
+            }
           >
             <Show
               when={profile()!.modelNames.length}
@@ -229,51 +254,53 @@ function App() {
             >
               <Switch>
                 <Match when={view() === 'mapping' && profile()}>
-                  <MappingScreen
+                  <DeckSetup
                     profile={profile()!}
-                    existing={mapping()}
-                    onSave={saveMapping}
-                    onCancel={mapping() ? () => navigate('dashboard') : undefined}
+                    existing={configuration()}
+                    onSave={saveConfiguration}
+                    onCancel={configuration() ? () => navigate('dashboard') : undefined}
                   />
                 </Match>
-                <Match when={view() === 'lesson' && mapping()}>
+                <Match when={view() === 'lesson' && configuration() && storageId()}>
                   <LessonSession
                     deckName={deckName()}
-                    mapping={mapping()!}
+                    storageId={storageId()}
+                    configuration={configuration()!}
                     onExit={() => {
                       navigate('dashboard')
                       void refetchDashboard()
                     }}
                   />
                 </Match>
-                <Match when={view() === 'review' && mapping()}>
+                <Match when={view() === 'review' && configuration() && storageId()}>
                   <ReviewSession
                     deckName={deckName()}
-                    mapping={mapping()!}
+                    storageId={storageId()}
+                    configuration={configuration()!}
                     onExit={() => {
                       navigate('dashboard')
                       void refetchDashboard()
                     }}
                   />
                 </Match>
-                <Match when={mapping()}>
+                <Match when={configuration()}>
                   <Dashboard
                     data={dashboard()}
                     loading={dashboard.loading}
                     error={dashboard.error}
                     deckName={deckName()}
-                    mapping={mapping()!}
+                    configuration={configuration()!}
                     onLessons={() => navigate('lesson')}
                     onReviews={() => navigate('review')}
                     onConfigure={() => navigate('mapping')}
                     onRetry={() => void refetchDashboard()}
                   />
                 </Match>
-                <Match when={!mapping() && profile()}>
-                  <MappingScreen
+                <Match when={!configuration() && profile()}>
+                  <DeckSetup
                     profile={profile()!}
                     existing={null}
-                    onSave={saveMapping}
+                    onSave={saveConfiguration}
                   />
                 </Match>
               </Switch>
@@ -317,7 +344,11 @@ function Header(props: {
             onChange={(event) => props.onSelect(event.currentTarget.value)}
           >
             <For each={props.decks}>
-              {(deck) => <option value={deck.name}>{deck.name}</option>}
+              {(deck) => (
+                <option value={deck.name}>
+                  {deck.name}{deck.subdeckCount ? ` (+${deck.subdeckCount} subdecks)` : ''}
+                </option>
+              )}
             </For>
           </select>
           <ChevronDown
@@ -337,8 +368,8 @@ function ConnectionScreen(props: {
 }) {
   return (
     <main class="grid min-h-screen place-items-center px-5">
-      <section class="w-full max-w-lg border-2 border-[var(--ink)] bg-white p-7 shadow-[8px_8px_0_var(--ink)] sm:p-10">
-        <div class="mb-7 grid size-14 place-items-center rounded-2xl bg-[var(--yellow)]">
+      <section class="card-shell w-full max-w-lg p-7 sm:p-10">
+        <div class="mb-7 grid size-14 place-items-center rounded-2xl bg-[var(--yellow-soft)]">
           <Show
             when={props.connected !== null}
             fallback={<LoaderCircle class="size-7 animate-spin" />}
@@ -356,12 +387,12 @@ function ConnectionScreen(props: {
               'Start Anki Desktop and make sure AnkiConnect is enabled.'}
         </p>
         <Show when={props.connected === false}>
-          <ol class="mt-6 space-y-2 border-l-3 border-[var(--yellow)] pl-5 text-sm font-semibold">
+          <ol class="mt-6 space-y-2 border-l-2 border-[var(--yellow)] pl-5 text-sm font-semibold">
             <li>1. Open Anki Desktop on this computer.</li>
             <li>2. Keep AnkiConnect enabled.</li>
             <li>3. Retry this connection.</li>
           </ol>
-          <button class="button-primary mt-7 w-full" onClick={() => void props.retry()}>
+          <button class="button-soft-primary mt-7 w-full" onClick={() => void props.retry()}>
             <RefreshCw class="size-4" />
             Retry connection
           </button>
@@ -386,11 +417,22 @@ function EmptyDeck(props: { deckName: string }) {
   )
 }
 
-function DeckLoading() {
+function DeckLoading(props: { error: string; retry: () => void }) {
   return (
     <section class="mx-auto mt-20 max-w-lg text-center">
-      <LoaderCircle class="mx-auto size-9 animate-spin text-[var(--violet)]" />
-      <h1 class="mt-5 text-xl font-black">Reading deck setup…</h1>
+      <Show
+        when={props.error}
+        fallback={<LoaderCircle class="mx-auto size-9 animate-spin text-[var(--violet)]" />}
+      >
+        <CircleAlert class="mx-auto size-9 text-[var(--coral)]" />
+      </Show>
+      <h1 class="mt-5 text-xl font-black">
+        {props.error ? 'Could not read deck setup' : 'Reading deck setup…'}
+      </h1>
+      <Show when={props.error}>
+        <p class="mt-3 text-sm text-[var(--muted)]">{props.error}</p>
+        <button class="button-quiet mt-6" onClick={props.retry}>Retry</button>
+      </Show>
     </section>
   )
 }
@@ -400,7 +442,7 @@ function Dashboard(props: {
   loading: boolean
   error: unknown
   deckName: string
-  mapping: FieldMapping
+  configuration: StudyConfig
   onLessons: () => void
   onReviews: () => void
   onConfigure: () => void
@@ -457,7 +499,8 @@ function Dashboard(props: {
             {(day) => (
               <DueCardsDialog
                 day={day()}
-                mapping={props.mapping}
+                deckName={props.deckName}
+                configuration={props.configuration}
                 onClose={() => setSelectedDay(null)}
               />
             )}
@@ -596,14 +639,26 @@ function CompletedCard(props: { data: DashboardData }) {
 function SpreadCard(props: { data: DashboardData }) {
   const max = Math.max(1, ...props.data.activeSpread.map((stage) => stage.total))
   const plotHeight = 164
+  const colors = [
+    'var(--coral)',
+    'var(--violet)',
+    'var(--mint)',
+    'var(--yellow)',
+    '#3b82f6',
+    '#ec4899',
+  ]
+  const colorFor = (key: string) => {
+    const index = props.data.spreadLegend.findIndex((item) => item.key === key)
+    return colors[Math.max(0, index) % colors.length]
+  }
   return (
     <article class="card-shell min-w-0 p-6 sm:p-8 lg:col-span-12">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <h2 class="text-2xl font-black">Active item spread</h2>
         <div class="flex flex-wrap gap-4 text-xs font-bold text-[var(--muted)]">
-          <Legend color="var(--coral)" label="German → English weaker" />
-          <Legend color="var(--violet)" label="English → German weaker" />
-          <Legend color="var(--mint)" label="Balanced" />
+          <For each={props.data.spreadLegend}>
+            {(item) => <Legend color={colorFor(item.key)} label={item.label} />}
+          </For>
         </div>
       </div>
       <div class="mt-7 overflow-x-auto pb-1">
@@ -634,21 +689,15 @@ function SpreadCard(props: { data: DashboardData }) {
                         style={{ height: `${totalHeight}px` }}
                         title={`${stage.label}: ${stage.total} notes`}
                       >
-                        <SpreadSegment
-                          count={stage.forwardWeak}
-                          total={stage.total}
-                          color="var(--coral)"
-                        />
-                        <SpreadSegment
-                          count={stage.reverseWeak}
-                          total={stage.total}
-                          color="var(--violet)"
-                        />
-                        <SpreadSegment
-                          count={stage.balanced}
-                          total={stage.total}
-                          color="var(--mint)"
-                        />
+                        <For each={props.data.spreadLegend}>
+                          {(item) => (
+                            <SpreadSegment
+                              count={stage.segments[item.key] ?? 0}
+                              total={stage.total}
+                              color={colorFor(item.key)}
+                            />
+                          )}
+                        </For>
                       </div>
                     </div>
                   )
@@ -720,12 +769,13 @@ function DashboardSkeleton(props: { error: unknown; retry: () => void }) {
 
 function DueCardsDialog(props: {
   day: ForecastDay
-  mapping: FieldMapping
+  deckName: string
+  configuration: StudyConfig
   onClose: () => void
 }) {
   const [cards] = createResource(
     () => props.day.cardIds,
-    (ids) => api.cards(ids, props.mapping),
+    (ids) => api.cards(props.deckName, ids, props.configuration),
   )
 
   onMount(() => {
@@ -790,97 +840,380 @@ function DueCardsDialog(props: {
   )
 }
 
-function MappingScreen(props: {
+function DeckSetup(props: {
   profile: DeckProfile
-  existing: FieldMapping | null
-  onSave: (mapping: FieldMapping) => void
+  existing: DeckConfig | null
+  onSave: (configuration: DeckConfig) => void
   onCancel?: () => void
 }) {
-  const initialModel =
-    props.existing?.modelName ??
-    props.profile.suggestedMapping?.modelName ??
-    props.profile.modelNames[0] ??
-    ''
-  const [modelName, setModelName] = createSignal(initialModel)
+  const fallback = (): DeckConfig => {
+    if (props.profile.suggestedMapping) {
+      return configFromLegacy(props.profile.deckName, props.profile.suggestedMapping)
+    }
+    return {
+      version: 2,
+      deckName: props.profile.deckName,
+      includeSubdecks: true,
+      models: props.profile.modelNames.map((modelName) => {
+        const fields = props.profile.fieldsByModel[modelName] ?? []
+        return {
+          modelName,
+          enabled: fields.length >= 2,
+          kind: 'text',
+          label: 'Typed recall',
+          confidence: fields.length >= 2 ? 0.5 : 0,
+          plans: [{
+            ord: 0,
+            kind: 'text',
+            direction: 'forward',
+            directionLabel: `${fields[0] ?? 'Prompt'} → ${fields[1] ?? 'Answer'}`,
+            promptField: fields[0],
+            answerFields: fields[1] ? [fields[1]] : [],
+            answerLanguages: ['plain'],
+          }],
+        } satisfies ModelConfig
+      }),
+    }
+  }
+  const initial =
+    props.existing ??
+    props.profile.suggestedConfig ??
+    fallback()
+  const [models, setModels] = createSignal<ModelConfig[]>(
+    structuredClone(initial.models),
+  )
+  const compatibility = (modelName: string) =>
+    props.profile.compatibility?.find((item) => item.modelName === modelName)
+
+  function updateModel(index: number, update: (model: ModelConfig) => void) {
+    setModels((current) =>
+      current.map((model, modelIndex) => {
+        if (modelIndex !== index) return model
+        const next = structuredClone(model)
+        update(next)
+        return next
+      }),
+    )
+  }
+  const [modelName, setModelName] = createSignal(models()[0]?.modelName ?? '')
+  const [previewIndex, setPreviewIndex] = createSignal(0)
+  const selectedIndex = createMemo(() =>
+    Math.max(0, models().findIndex((model) => model.modelName === modelName())),
+  )
+  const selectedModel = createMemo(() => models()[selectedIndex()])
+  const selectedReport = createMemo(() => compatibility(modelName()))
+  createEffect(() => {
+    modelName()
+    setPreviewIndex(0)
+  })
   const fields = createMemo(() => props.profile.fieldsByModel[modelName()] ?? [])
-  const suggested = props.existing ?? props.profile.suggestedMapping
-  const choose = (preferred: string | undefined, fallback: number) =>
-    preferred && fields().includes(preferred) ? preferred : fields()[fallback] ?? ''
-  const [sourceWord, setSourceWord] = createSignal(choose(suggested?.sourceWord, 0))
-  const [targetMeaning, setTargetMeaning] = createSignal(
-    choose(suggested?.targetMeaning, 1),
-  )
-  const [sourceExample, setSourceExample] = createSignal(
-    choose(suggested?.sourceExample, 2),
-  )
-  const [targetExample, setTargetExample] = createSignal(
-    choose(suggested?.targetExample, 3),
-  )
-  const [note, setNote] = createSignal(choose(suggested?.note, 4))
-  const [audio, setAudio] = createSignal(choose(suggested?.audio, 5))
-  const [sourceLabel, setSourceLabel] = createSignal(
-    suggested?.sourceLabel ?? 'Source',
-  )
-  const [targetLabel, setTargetLabel] = createSignal(
-    suggested?.targetLabel ?? 'Meaning',
-  )
-  const [forwardOrd, setForwardOrd] = createSignal(suggested?.forwardOrd ?? 0)
-  const [reverseOrd, setReverseOrd] = createSignal(suggested?.reverseOrd ?? 1)
   const templateNames = createMemo(
     () => Object.keys(props.profile.templatesByModel[modelName()] ?? {}),
   )
-
-  createEffect(() => {
-    const available = fields()
-    if (!available.includes(sourceWord())) setSourceWord(available[0] ?? '')
-    if (!available.includes(targetMeaning())) {
-      setTargetMeaning(available[1] ?? available[0] ?? '')
+  const previews = createMemo(() => {
+    const selected = selectedModel()
+    if (!selected) return []
+    const configuration: DeckConfig = {
+      version: 2,
+      deckName: props.profile.deckName,
+      includeSubdecks: true,
+      models: [selected],
     }
-    if (sourceExample() && !available.includes(sourceExample())) setSourceExample('')
-    if (targetExample() && !available.includes(targetExample())) setTargetExample('')
-    if (note() && !available.includes(note())) setNote('')
-    if (audio() && !available.includes(audio())) setAudio('')
-    const maxOrd = Math.max(0, templateNames().length - 1)
-    if (forwardOrd() > maxOrd) setForwardOrd(0)
-    if (reverseOrd() > maxOrd) setReverseOrd(Math.min(1, maxOrd))
+    return (props.profile.samplesByModel?.[modelName()] ?? [])
+      .map((card) => adaptCard(card, configuration))
+      .filter((card): card is StudyCard => Boolean(card))
   })
+  const preview = createMemo(() => previews()[previewIndex()] ?? previews()[0])
+  const setupIssues = createMemo(() => {
+    const issues = [
+      ...(compatibility(modelName())?.diagnostics?.issues ?? []),
+    ]
+    const item = preview()
+    if (!item) issues.push('No sample produces a usable typed answer.')
+    if (item?.prompt && item.prompt === item.canonicalAnswer) {
+      issues.push('Prompt and answer are identical.')
+    }
+    return [...new Set(issues)]
+  })
+  const firstPlan = createMemo(() => selectedModel()?.plans[0])
+  const secondPlan = createMemo(() => selectedModel()?.plans[1] ?? firstPlan())
+  const sourceWord = () => firstPlan()?.promptField ?? ''
+  const targetMeaning = () => firstPlan()?.answerFields[0] ?? ''
+  const additionalAnswer = () => firstPlan()?.answerFields[1] ?? ''
+  const answerMode = () => firstPlan()?.answerMode ?? 'parts'
+  const answerSeparators = () =>
+    (firstPlan()?.answerSeparators ?? ['/', ';']).join('')
+  const additionalOptional = () =>
+    Boolean(
+      additionalAnswer() &&
+        firstPlan()?.optionalAnswerFields?.includes(additionalAnswer()),
+    )
+  const sourceLanguage = () => secondPlan()?.answerLanguages[0] ?? 'plain'
+  const targetLanguage = () => firstPlan()?.answerLanguages[0] ?? 'plain'
+  const sourceExample = () => firstPlan()?.sourceExampleField ?? ''
+  const targetExample = () => firstPlan()?.targetExampleField ?? ''
+  const note = () => firstPlan()?.noteField ?? ''
+  const audio = () => firstPlan()?.audioField ?? ''
+  const forwardOrd = () => firstPlan()?.ord ?? 0
+  const reverseOrd = () => secondPlan()?.ord ?? 0
+  const updatePlan = (planIndex: number, update: (plan: ModelConfig['plans'][number]) => void) =>
+    updateModel(selectedIndex(), (model) => {
+      const selected = model.plans[planIndex] ?? model.plans[0]
+      if (selected) update(selected)
+    })
+  const setSourceWord = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan, index) => {
+        if (index === 0) plan.promptField = value
+        else plan.answerFields = [value]
+      })
+    })
+  const setTargetMeaning = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan, index) => {
+        if (index === 0) {
+          plan.answerFields = [value, ...plan.answerFields.slice(1)]
+        }
+        else plan.promptField = value
+      })
+    })
+  const setAdditionalAnswer = (value: string) =>
+    updatePlan(0, (plan) => {
+      plan.answerFields = value
+        ? [plan.answerFields[0], value].filter(Boolean)
+        : plan.answerFields.slice(0, 1)
+      plan.answerLanguages = value
+        ? [plan.answerLanguages[0] ?? 'plain', plan.answerLanguages[1] ?? 'plain']
+        : plan.answerLanguages.slice(0, 1)
+      plan.optionalAnswerFields = (plan.optionalAnswerFields ?? []).filter(
+        (name) => name === value,
+      )
+    })
+  const setAnswerMode = (value: AnswerMode) =>
+    updatePlan(0, (plan) => { plan.answerMode = value })
+  const setAnswerSeparators = (value: string) =>
+    updatePlan(0, (plan) => {
+      plan.answerSeparators = [...new Set([...value])].filter(
+        (separator) => !/\s/u.test(separator),
+      )
+    })
+  const setAdditionalOptional = (optional: boolean) =>
+    updatePlan(0, (plan) => {
+      const fieldName = plan.answerFields[1]
+      plan.optionalAnswerFields =
+        optional && fieldName ? [fieldName] : []
+    })
+  const setSourceLanguage = (value: AnswerLanguage) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.slice(1).forEach((plan) => {
+        plan.answerLanguages = [value]
+      })
+    })
+  const setTargetLanguage = (value: AnswerLanguage) =>
+    updatePlan(0, (plan) => { plan.answerLanguages = [value] })
+  const setSourceExample = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan) => {
+        plan.sourceExampleField = value || undefined
+      })
+    })
+  const setTargetExample = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan) => {
+        plan.targetExampleField = value || undefined
+      })
+    })
+  const setNote = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan) => { plan.noteField = value || undefined })
+    })
+  const setAudio = (value: string) =>
+    updateModel(selectedIndex(), (model) => {
+      model.plans.forEach((plan) => { plan.audioField = value || undefined })
+    })
+  const setForwardOrd = (value: number) =>
+    updatePlan(0, (plan) => { plan.ord = value })
+  const setReverseOrd = (value: number) =>
+    updateModel(selectedIndex(), (model) => {
+      if (model.plans[1]) model.plans[1].ord = value
+    })
 
   function submit(event: SubmitEvent) {
     event.preventDefault()
     props.onSave({
-      modelName: modelName(),
-      sourceWord: sourceWord(),
-      targetMeaning: targetMeaning(),
-      sourceExample: sourceExample() || undefined,
-      targetExample: targetExample() || undefined,
-      note: note() || undefined,
-      audio: audio() || undefined,
-      forwardOrd: forwardOrd(),
-      reverseOrd: reverseOrd(),
-      sourceLabel: sourceLabel().trim() || 'Source',
-      targetLabel: targetLabel().trim() || 'Meaning',
+      version: 2,
+      deckName: props.profile.deckName,
+      includeSubdecks: true,
+      customized: true,
+      models: models(),
     })
   }
 
   return (
-    <section class="mx-auto max-w-3xl">
+    <section class="mx-auto max-w-4xl">
       <div class="mb-7">
-        <p class="eyebrow">Deck setup</p>
-        <h1 class="mt-1 text-3xl font-black tracking-[-0.04em]">
-          Map vocabulary fields
-        </h1>
-        <p class="mt-3 max-w-2xl text-[var(--muted)]">
-          AnkiKani reads these fields only. Your Anki cards and templates stay untouched.
+        <h1 class="text-3xl font-black tracking-[-0.04em]">Deck setup</h1>
+        <p class="mt-2 text-[var(--muted)]">
+          {models().filter((model) => model.enabled).length} of {models().length} note types enabled
         </p>
       </div>
       <form class="card-shell p-6 sm:p-8" onSubmit={submit}>
-        <div class="grid gap-5 sm:grid-cols-2">
+        <div class="mb-7 grid gap-3 sm:grid-cols-2">
+          <For each={models()}>
+            {(model, index) => {
+              const report = () => compatibility(model.modelName)
+              return (
+                <label
+                  class="flex min-w-0 cursor-pointer items-start gap-3 rounded-xl border border-black/8 p-4"
+                  onClick={() => setModelName(model.modelName)}
+                >
+                  <input
+                    class="mt-0.5 size-5 accent-[var(--violet)]"
+                    type="checkbox"
+                    checked={model.enabled}
+                    onChange={(event) =>
+                      updateModel(index(), (next) => {
+                        next.enabled = event.currentTarget.checked
+                      })
+                    }
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="flex items-center justify-between gap-2">
+                      <span class="block min-w-0 flex-1 truncate font-black">{model.modelName}</span>
+                      <Show when={report()}>
+                        <span class={`shrink-0 rounded-full px-2 py-0.5 text-[0.68rem] font-black uppercase tracking-[0.08em] ${
+                          report()?.status === 'ready'
+                            ? 'bg-[var(--mint-soft)] text-[var(--mint-dark)]'
+                            : report()?.status === 'review'
+                              ? 'bg-[var(--yellow-soft)] text-[var(--ink)]'
+                              : 'bg-[var(--coral-soft)] text-[var(--coral-dark)]'
+                        }`}>
+                          {report()?.status === 'ready' ? 'Ready' : report()?.status === 'review' ? 'Check' : 'Unsupported'}
+                        </span>
+                      </Show>
+                    </span>
+                    <span class="mt-1 block text-sm text-[var(--muted)]">
+                      {model.label}
+                      <Show when={report()}> · {report()?.noteCount} notes</Show>
+                    </span>
+                  </span>
+                </label>
+              )
+            }}
+          </For>
+        </div>
+        <Show when={selectedReport()}>
+          {(report) => (
+            <div
+              class={`mb-6 rounded-2xl p-4 text-sm ${
+                report().status === 'ready'
+                  ? 'bg-[var(--mint-soft)]'
+                  : report().status === 'review'
+                    ? 'bg-[var(--yellow-soft)]'
+                    : 'bg-[var(--coral-soft)]'
+              }`}
+              role="status"
+            >
+              <strong>{report().status === 'ready' ? 'Ready to study.' : report().status === 'review' ? 'Check this mapping.' : 'Setup required.'}</strong>
+              <span class="ml-1 text-[var(--muted)]">{report().reason}</span>
+            </div>
+          )}
+        </Show>
+        <Show when={preview()}>
+          {(item) => (
+            <div class="mb-6 rounded-2xl bg-[var(--mint-soft)] p-5">
+              <div class="flex items-center justify-between gap-3">
+                <p class="text-xs font-black text-[var(--muted)]">
+                  Preview {previewIndex() + 1} of {previews().length}
+                </p>
+                <Show when={previews().length > 1}>
+                  <div class="flex gap-2">
+                    <button
+                      type="button"
+                      class="icon-button size-9"
+                      aria-label="Previous preview"
+                      onClick={() =>
+                        setPreviewIndex((value) =>
+                          (value - 1 + previews().length) % previews().length,
+                        )
+                      }
+                    >
+                      <ChevronRight class="size-4 rotate-180" />
+                    </button>
+                    <button
+                      type="button"
+                      class="icon-button size-9"
+                      aria-label="Next preview"
+                      onClick={() =>
+                        setPreviewIndex((value) =>
+                          (value + 1) % previews().length,
+                        )
+                      }
+                    >
+                      <ChevronRight class="size-4" />
+                    </button>
+                  </div>
+                </Show>
+              </div>
+              <p class="mt-3 font-black">{item().prompt || 'Media prompt'}</p>
+              <p class="mt-1 text-[var(--muted)]">{item().canonicalAnswer}</p>
+            </div>
+          )}
+        </Show>
+        <Show when={setupIssues().length}>
+          <div class="mb-6 rounded-2xl bg-[var(--coral-soft)] p-4 text-sm">
+            <For each={setupIssues()}>
+              {(issue) => <p class="font-semibold">{issue}</p>}
+            </For>
+          </div>
+        </Show>
+        <Show when={compatibility(modelName())?.diagnostics}>
+          {(diagnostics) => (
+            <details class="mb-6 rounded-2xl border border-black/8 bg-white p-4 text-sm">
+              <summary class="cursor-pointer font-black">
+                Detection details
+              </summary>
+              <div class="mt-3 space-y-2 text-[var(--muted)]">
+                <p><strong class="text-[var(--ink)]">Templates:</strong> {diagnostics().templates.join(', ') || 'none'}</p>
+                <p><strong class="text-[var(--ink)]">Prompt:</strong> {diagnostics().promptFields.join(', ') || 'not detected'}</p>
+                <p><strong class="text-[var(--ink)]">Answer:</strong> {diagnostics().answerFields.join(', ') || 'not detected'}</p>
+                <p><strong class="text-[var(--ink)]">Media:</strong> {diagnostics().mediaFields.join(', ') || 'none'}</p>
+              </div>
+            </details>
+          )}
+        </Show>
+        <Show when={selectedReport()?.status !== 'ready'}>
+          <div class="grid gap-5 sm:grid-cols-2">
           <FieldSelect label="Note type" value={modelName()} options={props.profile.modelNames} onInput={setModelName} />
           <div />
-          <TextField label="Source language label" value={sourceLabel()} onInput={setSourceLabel} />
-          <TextField label="Target language label" value={targetLabel()} onInput={setTargetLabel} />
-          <FieldSelect label="Source word" value={sourceWord()} options={fields()} onInput={setSourceWord} required />
-          <FieldSelect label="Target meaning" value={targetMeaning()} options={fields()} onInput={setTargetMeaning} required />
+          <FieldSelect label="Prompt" value={sourceWord()} options={fields()} onInput={setSourceWord} required />
+          <FieldSelect label="Answer" value={targetMeaning()} options={fields()} onInput={setTargetMeaning} required />
+          <FieldSelect label="Additional answer" value={additionalAnswer()} options={fields()} onInput={setAdditionalAnswer} optional />
+          <AnswerModeSelect value={answerMode()} onInput={setAnswerMode} />
+          <LanguageSelect label="Prompt language" value={sourceLanguage()} onInput={setSourceLanguage} />
+          <LanguageSelect label="Answer language" value={targetLanguage()} onInput={setTargetLanguage} />
+          <label class="block">
+            <span class="field-label">Accepted separators</span>
+            <input
+              class="field-control"
+              value={answerSeparators()}
+              onInput={(event) => setAnswerSeparators(event.currentTarget.value)}
+              aria-label="Accepted separators"
+            />
+          </label>
+          <Show when={additionalAnswer()}>
+            <label class="flex items-center gap-3 self-end rounded-xl border border-black/8 px-4 py-3">
+              <input
+                type="checkbox"
+                class="size-5 accent-[var(--violet)]"
+                checked={additionalOptional()}
+                onChange={(event) =>
+                  setAdditionalOptional(event.currentTarget.checked)
+                }
+              />
+              Additional answer is optional
+            </label>
+          </Show>
           <FieldSelect label="Source example" value={sourceExample()} options={fields()} onInput={setSourceExample} optional />
           <FieldSelect label="Target example" value={targetExample()} options={fields()} onInput={setTargetExample} optional />
           <FieldSelect label="Optional note" value={note()} options={fields()} onInput={setNote} optional />
@@ -897,14 +1230,15 @@ function MappingScreen(props: {
             value={reverseOrd()}
             onInput={setReverseOrd}
           />
-        </div>
+          </div>
+        </Show>
         <div class="mt-8 flex flex-col-reverse justify-end gap-3 border-t border-black/8 pt-6 sm:flex-row">
           <Show when={props.onCancel}>
             <button type="button" class="button-quiet" onClick={props.onCancel}>Cancel</button>
           </Show>
-          <button type="submit" class="button-primary">
+          <button type="submit" class="button-primary" disabled={!models().some((model) => model.enabled)}>
             <Check class="size-4" />
-            Save mapping
+            Save setup
           </button>
         </div>
       </form>
@@ -939,19 +1273,6 @@ function FieldSelect(props: {
   )
 }
 
-function TextField(props: {
-  label: string
-  value: string
-  onInput: (value: string) => void
-}) {
-  return (
-    <label class="block">
-      <span class="field-label">{props.label}</span>
-      <input class="field-control" value={props.value} onInput={(event) => props.onInput(event.currentTarget.value)} />
-    </label>
-  )
-}
-
 function TemplateSelect(props: {
   label: string
   names: string[]
@@ -974,16 +1295,104 @@ function TemplateSelect(props: {
   )
 }
 
+function LanguageSelect(props: {
+  label: string
+  value: AnswerLanguage
+  onInput: (value: AnswerLanguage) => void
+}) {
+  return (
+    <label class="block">
+      <span class="field-label">{props.label}</span>
+      <select
+        class="field-control"
+        value={props.value}
+        onInput={(event) =>
+          props.onInput(event.currentTarget.value as AnswerLanguage)
+        }
+      >
+        <option value="german">German</option>
+        <option value="english">English</option>
+        <option value="plain">Other</option>
+      </select>
+    </label>
+  )
+}
+
+function AnswerModeSelect(props: {
+  value: AnswerMode
+  onInput: (value: AnswerMode) => void
+}) {
+  return (
+    <label class="block">
+      <span class="field-label">Answer format</span>
+      <select
+        class="field-control"
+        value={props.value}
+        onInput={(event) =>
+          props.onInput(event.currentTarget.value as AnswerMode)
+        }
+      >
+        <option value="parts">Separate fields</option>
+        <option value="alternatives">Either field</option>
+        <option value="unordered">List, any order</option>
+      </select>
+    </label>
+  )
+}
+
+function createRecoverableLoad<T>(
+  source: () => string,
+  load: () => Promise<T>,
+) {
+  const [data, setData] = createSignal<T>()
+  const [loading, setLoading] = createSignal(true)
+  const [error, setError] = createSignal<unknown>()
+  let request = 0
+
+  const retry = async () => {
+    const current = ++request
+    setLoading(true)
+    setError(undefined)
+    try {
+      const next = await load()
+      if (current === request) setData(() => next)
+    } catch (caught) {
+      if (current === request) setError(caught)
+    } finally {
+      if (current === request) setLoading(false)
+    }
+  }
+
+  createEffect(() => {
+    source()
+    void retry()
+  })
+
+  return { data, loading, error, retry }
+}
+
 function LessonSession(props: {
   deckName: string
-  mapping: FieldMapping
+  storageId: string
+  configuration: StudyConfig
   onExit: () => void
 }) {
-  const [payload] = createResource(() => api.lessons(props.deckName, props.mapping))
-  const teachingStorage = sessionKey(props.deckName, 'lesson-teaching')
+  const payload = createRecoverableLoad(
+    () => `${props.deckName}:${JSON.stringify(props.configuration)}`,
+    () => api.lessons(props.deckName, props.configuration),
+  )
+  const teachingStorage = sessionStorageKey(
+    props.storageId,
+    'lesson-teaching',
+  )
   const restored = (() => {
     try {
-      return JSON.parse(localStorage.getItem(teachingStorage) ?? 'null') as {
+      return JSON.parse(
+        loadMigratedSession(
+          teachingStorage,
+          legacySessionKey(props.deckName, 'lesson-teaching'),
+        ) ?? 'null',
+      ) as {
         teachingIndex: number
         quizzing: boolean
       } | null
@@ -1010,18 +1419,18 @@ function LessonSession(props: {
   }
 
   createEffect(() => {
-    const lesson = payload()
-    if (!payload.loading && lesson && lesson.items.length === 0) {
+    const lesson = payload.data()
+    if (!payload.loading() && lesson && lesson.items.length === 0) {
       localStorage.removeItem(teachingStorage)
-      localStorage.removeItem(sessionKey(props.deckName, 'lesson'))
+      localStorage.removeItem(sessionStorageKey(props.storageId, 'lesson'))
       props.onExit()
     }
   })
 
   return (
     <Show
-      when={!payload.loading && payload()}
-      fallback={<SessionLoading title="Preparing lessons" onExit={props.onExit} error={payload.error} />}
+      when={!payload.loading() && payload.data()}
+      fallback={<SessionLoading title="Preparing lessons" onExit={props.onExit} error={payload.error()} retry={() => void payload.retry()} />}
     >
       {(lesson) => (
         <Show
@@ -1043,8 +1452,9 @@ function LessonSession(props: {
             }
           >
             <StudyRunner
-              mode="lesson"
-              deckName={props.deckName}
+            mode="lesson"
+            deckName={props.deckName}
+            storageId={props.storageId}
               cards={lesson().quizCards}
               onExit={props.onExit}
               onComplete={completeLesson}
@@ -1058,21 +1468,31 @@ function LessonSession(props: {
 
 function ReviewSession(props: {
   deckName: string
-  mapping: FieldMapping
+  storageId: string
+  configuration: StudyConfig
   onExit: () => void
 }) {
-  const [payload] = createResource(() => api.reviews(props.deckName, props.mapping))
+  const payload = createRecoverableLoad(
+    () => `${props.deckName}:${JSON.stringify(props.configuration)}`,
+    () => api.reviews(props.deckName, props.configuration),
+  )
   return (
     <Show
-      when={!payload.loading && payload()}
-      fallback={<SessionLoading title="Building review queue" onExit={props.onExit} error={payload.error} />}
+      when={!payload.loading() && payload.data()}
+      fallback={<SessionLoading title="Building review queue" onExit={props.onExit} error={payload.error()} retry={() => void payload.retry()} />}
     >
       {(session) => (
         <Show
           when={session().cards.length}
           fallback={<SessionEmpty title="Reviews cleared" copy="Nothing is due in this deck right now." onExit={props.onExit} />}
         >
-          <StudyRunner mode="review" deckName={props.deckName} cards={session().cards} onExit={props.onExit} />
+          <StudyRunner
+            mode="review"
+            deckName={props.deckName}
+            storageId={props.storageId}
+            cards={session().cards}
+            onExit={props.onExit}
+          />
         </Show>
       )}
     </Show>
@@ -1085,6 +1505,31 @@ function LessonTeaching(props: {
   total: number
   onNext: () => void
 }) {
+  onMount(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (
+        event.key === 'Enter' &&
+        !target?.matches('input, textarea, select, button')
+      ) {
+        event.preventDefault()
+        props.onNext()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    onCleanup(() => window.removeEventListener('keydown', onKeyDown))
+  })
+  const card = () => props.item.cards[0]
+  const visibleDetails = () =>
+    (props.item.details ?? []).filter((detail) =>
+      ![
+        props.item.sourceExample,
+        props.item.targetExample,
+        props.item.note,
+        card()?.prompt,
+        card()?.canonicalAnswer,
+      ].includes(detail.value),
+    )
   return (
     <StudyShell
       progress={props.index}
@@ -1095,25 +1540,52 @@ function LessonTeaching(props: {
           <span class="rounded-full bg-[var(--yellow)] px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
             New word {props.index + 1} of {props.total}
           </span>
-          <AudioButton filename={props.item.audioFilename} />
+          <AudioButton
+            filenames={
+              props.item.promptAudioFilenames?.length
+                ? props.item.promptAudioFilenames
+                : props.item.audioFilenames?.length
+                  ? props.item.audioFilenames
+                  : [props.item.promptAudioFilename ?? props.item.audioFilename]
+                      .filter((value): value is string => Boolean(value))
+            }
+            autoplay={props.item.contentKind === 'audio'}
+            hotkey
+          />
         </div>
         <div class="grid gap-4 md:grid-cols-2">
           <div class="card-shell bg-[var(--mint-soft)] p-6 sm:p-8">
-            <p class="eyebrow">German</p>
-            <h1 class="mt-3 text-4xl font-black tracking-[-0.045em]">{props.item.sourceWord}</h1>
+            <Show when={props.item.imageFilenames?.length}>
+              <div class="mb-4 flex flex-wrap gap-3">
+                <For each={props.item.imageFilenames}>
+                  {(filename) => <img class="max-h-48 rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />}
+                </For>
+              </div>
+            </Show>
+            <h1 class="text-3xl font-black tracking-[-0.045em]">
+              {card()?.prompt || props.item.sourceWord || 'Listen'}
+            </h1>
             <Show when={props.item.sourceExample}>
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.sourceExample}</p>
             </Show>
           </div>
           <div class="card-shell bg-[var(--violet-soft)] p-6 sm:p-8">
-            <p class="eyebrow">English</p>
-            <h2 class="mt-3 text-3xl font-black tracking-[-0.04em]">{props.item.targetMeaning}</h2>
+            <h2 class="text-3xl font-black tracking-[-0.04em]">
+              {card()?.canonicalAnswer || props.item.targetMeaning}
+            </h2>
             <Show when={props.item.targetExample}>
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.targetExample}</p>
             </Show>
             <Show when={props.item.note}>
-              <p class="mt-4 text-sm font-semibold text-[var(--muted)]">{props.item.note}</p>
+              <NoteContent value={props.item.note} />
             </Show>
+            <For each={visibleDetails()}>
+              {(detail) => (
+                <p class="mt-4 text-sm leading-6 text-[var(--muted)]">
+                  <strong>{humanizeField(detail.label)}:</strong> {detail.value}
+                </p>
+              )}
+            </For>
           </div>
         </div>
         <button class="button-soft-primary mt-8 w-full sm:ml-auto sm:flex sm:w-auto" onClick={props.onNext}>
@@ -1128,42 +1600,66 @@ function LessonTeaching(props: {
 function StudyRunner(props: {
   mode: 'lesson' | 'review'
   deckName: string
+  storageId: string
   cards: StudyCard[]
   onExit: () => void
   onComplete?: () => void
 }) {
-  const storage = sessionKey(props.deckName, props.mode)
+  const partsFor = (card: StudyCard): AnswerPart[] =>
+    card.answerParts?.length
+      ? card.answerParts
+      : [{
+          id: 'answer',
+          label: 'Answer',
+          canonicalAnswer: card.canonicalAnswer,
+          acceptedAnswers: card.acceptedAnswers,
+          language: card.direction === 'reverse' ? 'german' : 'english',
+        }]
+  const storage = sessionStorageKey(props.storageId, props.mode)
   const restored = (() => {
     try {
-      return JSON.parse(localStorage.getItem(storage) ?? 'null') as {
+      return JSON.parse(
+        loadMigratedSession(
+          storage,
+          legacySessionKey(props.deckName, props.mode),
+        ) ?? 'null',
+      ) as {
         index: number
         phase: StudyPhase
         input: string
+        inputs?: string[]
         result: 'correct' | 'incorrect' | null
+        gradeRequestId?: string
         cards?: StudyCard[]
       } | null
     } catch {
       return null
     }
   })()
-  const sessionCards =
+  const initialCards =
     restored?.cards?.length ? restored.cards : props.cards
+  const [sessionCards, setSessionCards] = createSignal<StudyCard[]>(initialCards)
   const [index, setIndex] = createSignal(
-    restored && restored.index < sessionCards.length ? restored.index : 0,
+    restored && restored.index < initialCards.length ? restored.index : 0,
   )
   const [phase, setPhase] = createSignal<StudyPhase>(restored?.phase ?? 'answering')
-  const [input, setInput] = createSignal(restored?.input ?? '')
+  const [inputs, setInputs] = createSignal<string[]>(
+    restored?.inputs ?? [restored?.input ?? ''],
+  )
   const [result, setResult] = createSignal<'correct' | 'incorrect' | null>(
     restored?.result ?? null,
+  )
+  const [gradeRequestId, setGradeRequestId] = createSignal(
+    restored?.gradeRequestId ?? '',
   )
   const [saving, setSaving] = createSignal(false)
   const [error, setError] = createSignal('')
   let answerInput: HTMLInputElement | undefined
-  const current = createMemo(() => sessionCards[index()])
+  const current = createMemo(() => sessionCards()[index()])
   const progress = createMemo(() => index() + 1)
 
   createEffect(() => {
-    if (index() >= sessionCards.length) {
+    if (index() >= sessionCards().length) {
       localStorage.removeItem(storage)
       return
     }
@@ -1172,9 +1668,11 @@ function StudyRunner(props: {
       JSON.stringify({
         index: index(),
         phase: phase(),
-        input: input(),
+        input: inputs()[0] ?? '',
+        inputs: inputs(),
         result: result(),
-        cards: sessionCards,
+        gradeRequestId: gradeRequestId(),
+        cards: sessionCards(),
       }),
     )
   })
@@ -1191,13 +1689,30 @@ function StudyRunner(props: {
     setSaving(true)
     setError('')
     try {
-      await api.answer(card.cardId, ease)
+      if (!card.practiceOnly) {
+        const requestId =
+          gradeRequestId() ||
+          globalThis.crypto?.randomUUID?.() ||
+          `${Date.now()}-${Math.random()}`
+        setGradeRequestId(requestId)
+        await api.answer(card.cardId, ease, requestId)
+      }
       setResult(outcome)
       setPhase('feedback')
-      if (card.audioFilename) {
-        const audio = new Audio(api.mediaUrl(card.audioFilename))
-        void audio.play().catch(() => undefined)
+      if (props.mode === 'lesson' && outcome === 'incorrect') {
+        setSessionCards((cards) => [
+          ...cards,
+          { ...card, practiceOnly: true },
+        ])
       }
+      void playAudioSequence(
+        card.audioFilenames?.length
+          ? card.audioFilenames
+          : [card.audioFilename].filter(
+              (value): value is string => Boolean(value),
+            ),
+        1,
+      )
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Grade was not saved.')
     } finally {
@@ -1209,19 +1724,16 @@ function StudyRunner(props: {
     event.preventDefault()
     const card = current()
     if (!card || saving()) return
-    const language = card.direction === 'reverse' ? 'german' : 'english'
     const currentPhase = phase()
     if (currentPhase === 'answering' || currentPhase === 'correction') {
-      const decision = submissionDecision(
-        currentPhase,
-        input(),
-        card.acceptedAnswers,
-        language,
+      const parts = partsFor(card)
+      const correct = parts.every((part, partIndex) =>
+        matchesAnswerPart(inputs()[partIndex] ?? '', part),
       )
-      if (decision.action === 'show-correction') {
+      if (currentPhase === 'answering' && !correct) {
         setPhase('correction')
       } else {
-        await save(decision.ease, decision.outcome)
+        await save(correct ? 3 : 1, correct ? 'correct' : 'incorrect')
       }
       return
     }
@@ -1229,15 +1741,16 @@ function StudyRunner(props: {
   }
 
   function next() {
-    if (index() + 1 >= sessionCards.length) {
+    if (index() + 1 >= sessionCards().length) {
       localStorage.removeItem(storage)
-      setIndex(sessionCards.length)
+      setIndex(sessionCards().length)
       return
     }
     setIndex((value) => value + 1)
-    setInput('')
+    setInputs([])
     setPhase('answering')
     setResult(null)
+    setGradeRequestId('')
     setError('')
   }
 
@@ -1247,7 +1760,7 @@ function StudyRunner(props: {
       fallback={
         <SessionComplete
           mode={props.mode}
-          count={sessionCards.length}
+          count={sessionCards().length}
           onExit={props.onComplete ?? props.onExit}
         />
       }
@@ -1255,7 +1768,20 @@ function StudyRunner(props: {
       {(card) => (
         <StudyShell
           progress={progress()}
-          total={sessionCards.length}
+          total={sessionCards().length}
+          announcement={
+            error()
+              ? `Connection interrupted. Answer preserved. ${error()}`
+              : saving()
+                ? 'Saving answer to Anki.'
+                : phase() === 'correction'
+                  ? 'Answer needs correction. Expected answer is shown.'
+                  : phase() === 'feedback'
+                    ? result() === 'correct'
+                      ? 'Answer accepted.'
+                      : 'Answer saved as Again.'
+                    : `Card ${progress()} of ${sessionCards().length}.`
+          }
         >
           <article class="mx-auto w-full max-w-xl">
             <div
@@ -1279,32 +1805,82 @@ function StudyRunner(props: {
                       : 'white',
               }}
             >
-              <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
-                {card().prompt}
-              </h1>
+              <Show when={card().promptAudioFilename}>
+                <div class="mb-5 flex justify-center">
+                  <AudioButton
+                    filenames={
+                      card().promptAudioFilenames?.length
+                        ? (card().promptAudioFilenames ?? [])
+                        : [card().promptAudioFilename].filter(
+                            (value): value is string => Boolean(value),
+                          )
+                    }
+                    label="Play prompt"
+                    autoplay={card().contentKind === 'audio'}
+                    hotkey
+                  />
+                </div>
+              </Show>
+              <Show when={card().promptImageFilenames?.length}>
+                <div class="mb-5 flex flex-wrap justify-center gap-3">
+                  <For each={card().promptImageFilenames}>
+                    {(filename) => (
+                      <img
+                        class="max-h-64 max-w-full rounded-xl object-contain"
+                        src={api.mediaUrl(filename)}
+                        alt=""
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <Show when={card().prompt}>
+                <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
+                  {card().prompt}
+                </h1>
+              </Show>
 
               <form class="mt-7" onSubmit={submit}>
-                <label class="mx-auto block max-w-sm">
-                  <span class="sr-only">Type your answer</span>
-                  <input
-                    ref={answerInput}
-                    class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
-                      phase() === 'correction'
-                        ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
-                        : phase() === 'feedback'
-                          ? result() === 'correct'
-                            ? 'border-[var(--mint)]'
-                            : 'border-[var(--coral)]'
-                        : 'border-black/15 focus:border-[var(--violet)] focus:ring-4 focus:ring-[color:var(--violet)]/15'
-                    }`}
-                    value={input()}
-                    readOnly={phase() === 'feedback'}
-                    autocomplete="off"
-                    autocapitalize="none"
-                    spellcheck={false}
-                    onInput={(event) => setInput(event.currentTarget.value)}
-                  />
-                </label>
+                <div class="mx-auto max-w-sm space-y-3">
+                  <For each={partsFor(card())}>
+                    {(part, partIndex) => (
+                      <label class="block">
+                        <Show when={partsFor(card()).length > 1}>
+                          <span class="mb-1.5 block text-sm font-black">{part.label}</span>
+                        </Show>
+                        <input
+                          ref={(element) => {
+                            if (partIndex() === 0) answerInput = element
+                          }}
+                          aria-label={part.label}
+                          class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
+                            phase() === 'correction'
+                              ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
+                              : phase() === 'feedback'
+                                ? result() === 'correct'
+                                  ? 'border-[var(--mint)]'
+                                  : 'border-[var(--coral)]'
+                              : 'border-black/15 focus:border-[var(--violet)] focus:ring-4 focus:ring-[color:var(--violet)]/15'
+                          }`}
+                          value={inputs()[partIndex()] ?? ''}
+                          readOnly={phase() === 'feedback'}
+                          autocomplete="off"
+                          autocapitalize="none"
+                          spellcheck={false}
+                          onInput={(event) =>
+                            setInputs((current) => {
+                              setGradeRequestId('')
+                              setError('')
+                              const next = [...current]
+                              next[partIndex()] = event.currentTarget.value
+                              return next
+                            })
+                          }
+                        />
+                      </label>
+                    )}
+                  </For>
+                </div>
 
                 <Show when={phase() === 'correction'}>
                   <div class="mt-5 rounded-xl bg-white/75 p-4">
@@ -1329,7 +1905,7 @@ function StudyRunner(props: {
 
                 <Show when={error()}>
                   <p role="alert" class="mt-4 rounded-lg bg-[var(--coral)] px-4 py-3 text-sm font-bold text-white">
-                    {error()} Your card is still here; retry safely.
+                    {error()} Answer and queue position are preserved. Submit again.
                   </p>
                 </Show>
 
@@ -1360,7 +1936,16 @@ function Feedback(props: {
         <div>
           <p class="text-2xl font-black">{props.card.canonicalAnswer}</p>
         </div>
-        <AudioButton filename={props.card.audioFilename} />
+        <AudioButton
+          filenames={
+            props.card.audioFilenames?.length
+              ? props.card.audioFilenames
+              : [props.card.audioFilename].filter(
+                  (value): value is string => Boolean(value),
+                )
+          }
+          hotkey
+        />
       </div>
       <div class="mt-5 grid gap-3 sm:grid-cols-2">
         <Show when={props.card.sourceExample}>
@@ -1371,28 +1956,137 @@ function Feedback(props: {
         </Show>
       </div>
       <Show when={props.card.note}>
-        <p class="mt-3 text-sm font-semibold text-[var(--muted)]">{props.card.note}</p>
+        <NoteContent value={props.card.note} />
+      </Show>
+      <For each={(props.card.details ?? []).filter((detail) =>
+        ![
+          props.card.sourceExample,
+          props.card.targetExample,
+          props.card.note,
+          props.card.prompt,
+          props.card.canonicalAnswer,
+        ].includes(detail.value),
+      )}>
+        {(detail) => (
+          <p class="mt-3 text-sm text-[var(--muted)]">
+            <strong>{humanizeField(detail.label)}:</strong> {detail.value}
+          </p>
+        )}
+      </For>
+      <Show when={props.card.answerImageFilenames?.length}>
+        <div class="mt-4 flex flex-wrap gap-3">
+          <For each={props.card.answerImageFilenames}>
+            {(filename) => (
+              <img
+                class="max-h-48 max-w-full rounded-xl object-contain"
+                src={api.mediaUrl(filename)}
+                alt=""
+              />
+            )}
+          </For>
+        </div>
       </Show>
     </div>
   )
 }
 
-function AudioButton(props: { filename: string | null }) {
-  const [playing, setPlaying] = createSignal(false)
-  async function play() {
-    if (!props.filename) return
-    setPlaying(true)
-    const audio = new Audio(api.mediaUrl(props.filename))
-    audio.addEventListener('ended', () => setPlaying(false), { once: true })
-    audio.addEventListener('error', () => setPlaying(false), { once: true })
-    await audio.play().catch(() => setPlaying(false))
-  }
+function humanizeField(name: string) {
+  return name
+    .replaceAll('_', ' ')
+    .replace(/([a-z])([A-Z])/gu, '$1 $2')
+    .replace(/^./u, (letter) => letter.toUpperCase())
+}
+
+function NoteContent(props: { value: string }) {
   return (
-    <Show when={props.filename}>
-      <button class="button-quiet" type="button" onClick={() => void play()}>
-        {playing() ? <Headphones class="size-4 animate-pulse" /> : <Volume2 class="size-4" />}
-        Replay audio
-      </button>
+    <Show
+      when={props.value.length > 140}
+      fallback={
+        <p class="mt-4 text-sm font-semibold text-[var(--muted)]">
+          {props.value}
+        </p>
+      }
+    >
+      <details class="mt-4 rounded-xl bg-white/65 px-4 py-3 text-sm text-[var(--muted)]">
+        <summary class="cursor-pointer font-black text-[var(--ink)]">
+          Grammar note
+        </summary>
+        <p class="mt-3 leading-6">{props.value}</p>
+      </details>
+    </Show>
+  )
+}
+
+async function playAudioSequence(filenames: string[], rate: number) {
+  for (const filename of filenames) {
+    await new Promise<void>((resolve) => {
+      const audio = new Audio(api.mediaUrl(filename))
+      audio.playbackRate = rate
+      audio.addEventListener('ended', () => resolve(), { once: true })
+      audio.addEventListener('error', () => resolve(), { once: true })
+      void audio.play().catch(() => resolve())
+    })
+  }
+}
+
+function AudioButton(props: {
+  filenames: string[]
+  label?: string
+  autoplay?: boolean
+  hotkey?: boolean
+}) {
+  const [playing, setPlaying] = createSignal(false)
+  const [rate, setRate] = createSignal(1)
+  let autoplayKey = ''
+
+  async function play() {
+    if (!props.filenames.length || playing()) return
+    setPlaying(true)
+    await playAudioSequence(props.filenames, rate())
+    setPlaying(false)
+  }
+
+  createEffect(() => {
+    const key = props.autoplay ? props.filenames.join('|') : ''
+    if (!key || key === autoplayKey) return
+    autoplayKey = key
+    queueMicrotask(() => void play())
+  })
+
+  onMount(() => {
+    if (!props.hotkey) return
+    const replay = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const editing =
+        target instanceof HTMLInputElement
+          ? !target.readOnly
+          : ['TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')
+      if (event.key.toLocaleLowerCase() !== 'j' || editing) return
+      event.preventDefault()
+      void play()
+    }
+    window.addEventListener('keydown', replay)
+    onCleanup(() => window.removeEventListener('keydown', replay))
+  })
+
+  return (
+    <Show when={props.filenames.length}>
+      <div class="flex items-center gap-2">
+        <button class="button-quiet" type="button" onClick={() => void play()}>
+          {playing() ? <Headphones class="size-4 animate-pulse" /> : <Volume2 class="size-4" />}
+          {props.label ?? 'Replay audio'}
+        </button>
+        <select
+          class="h-10 rounded-xl border border-black/10 bg-white px-2 text-sm font-black shadow-sm"
+          aria-label="Playback speed"
+          value={`${rate()}`}
+          onInput={(event) => setRate(Number(event.currentTarget.value))}
+        >
+          <option value="0.75">0.75×</option>
+          <option value="1">1×</option>
+          <option value="1.25">1.25×</option>
+        </select>
+      </div>
     </Show>
   )
 }
@@ -1400,6 +2094,7 @@ function AudioButton(props: { filename: string | null }) {
 function StudyShell(props: {
   progress: number
   total: number
+  announcement?: string
   children: unknown
 }) {
   return (
@@ -1419,7 +2114,19 @@ function StudyShell(props: {
           />
         </div>
       </div>
+      <Show when={props.announcement}>
+        <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {props.announcement}
+        </p>
+      </Show>
       {props.children as never}
+      <div
+        class="mx-auto mt-5 hidden max-w-xl items-center justify-end gap-4 text-xs font-semibold text-[var(--muted)] sm:flex"
+        aria-label="Keyboard shortcuts"
+      >
+        <span><kbd>Enter</kbd> Submit / continue</span>
+        <span><kbd>J</kbd> Replay audio</span>
+      </div>
     </section>
   )
 }
@@ -1428,6 +2135,7 @@ function SessionLoading(props: {
   title: string
   onExit: () => void
   error: unknown
+  retry: () => void
 }) {
   return (
     <section class="mx-auto mt-20 max-w-lg text-center">
@@ -1435,8 +2143,15 @@ function SessionLoading(props: {
         <CircleAlert class="mx-auto size-10 text-[var(--coral)]" />
       </Show>
       <h1 class="mt-5 text-2xl font-black">{props.error ? 'Could not start session' : props.title}</h1>
-      <Show when={props.error}><p class="mt-3 text-[var(--muted)]">{props.error instanceof Error ? props.error.message : 'Try again.'}</p></Show>
-      <button class="button-quiet mt-6" onClick={props.onExit}>Back to dashboard</button>
+      <Show when={props.error}>
+        <p role="alert" class="mt-3 text-[var(--muted)]">{props.error instanceof Error ? props.error.message : 'Try again.'}</p>
+      </Show>
+      <div class="mt-6 flex justify-center gap-3">
+        <Show when={props.error}>
+          <button class="button-soft-primary" onClick={props.retry}>Retry</button>
+        </Show>
+        <button class="button-quiet" onClick={props.onExit}>Back to dashboard</button>
+      </div>
     </section>
   )
 }
@@ -1472,7 +2187,7 @@ function SessionComplete(props: {
       <h1 class="mt-2 text-4xl font-black tracking-[-0.05em]">
         {props.count} {props.mode === 'lesson' ? 'quiz answers' : 'reviews'} done
       </h1>
-      <p class="mt-4 text-[var(--muted)]">Anki has every result. Dashboard is ready to refresh.</p>
+      <p class="mt-4 text-[var(--muted)]">Anki saved every result.</p>
       <button class="button-soft-primary mt-8" onClick={props.onExit}>Return to dashboard</button>
     </section>
   )

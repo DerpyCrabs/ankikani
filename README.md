@@ -8,6 +8,13 @@ It does not manage decks or edit cards.
 
 ![Correct review](docs/screenshots/review.jpg)
 
+## Deck support
+
+AnkiKani detects note types inside a deck and its subdecks. It supports plain
+Front/Back cards, German vocabulary, cloze sentences, audio prompts, images,
+and multi-part answers such as irregular verb forms. Review detected fields in
+**Fields** when a deck uses an unfamiliar schema.
+
 ## Run
 
 Requires [Bun](https://bun.sh/), Anki Desktop, and AnkiConnect add-on

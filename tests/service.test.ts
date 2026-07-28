@@ -69,8 +69,8 @@ describe('deck API', () => {
       'German::Chapter 1': 3,
     })
     await expect(listDecks()).resolves.toEqual([
-      { id: 1, name: 'Default', supported: false, modelNames: [] },
-      { id: 2, name: 'German', supported: false, modelNames: [] },
+      { id: 1, name: 'Default', supported: true, modelNames: [], subdeckCount: 0 },
+      { id: 2, name: 'German', supported: true, modelNames: [], subdeckCount: 1 },
     ])
   })
 })
@@ -179,6 +179,14 @@ describe('grade integration', () => {
     await expect(answerCard(42, 1)).rejects.toThrow(
       'Anki did not accept the card grade.',
     )
+  })
+
+  it('deduplicates a repeated grading request', async () => {
+    mocks.invoke.mockResolvedValue([true])
+    await answerCard(42, 3, 'same-request')
+    await answerCard(42, 3, 'same-request')
+
+    expect(mocks.invoke).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -77,16 +77,20 @@ describe('active item spread', () => {
       card(3, 2, 'forward', 12),
       card(4, 2, 'reverse', 12),
     ])
-    expect(spread[3]).toMatchObject({
+    expect(spread.stages[3]).toMatchObject({
       label: '4–7 days',
       total: 1,
-      reverseWeak: 1,
+      segments: { 'weak:reverse weaker': 1 },
     })
-    expect(spread[4]).toMatchObject({
+    expect(spread.stages[4]).toMatchObject({
       label: '8–14 days',
       total: 1,
-      balanced: 1,
+      segments: { balanced: 1 },
     })
+    expect(spread.legend.map((item) => item.label)).toEqual([
+      'reverse weaker',
+      'Balanced',
+    ])
   })
 
   it('uses all eight interval buckets', () => {
@@ -98,6 +102,22 @@ describe('active item spread', () => {
     expect(stageIndex(card(1, 1, 'forward', 30))).toBe(5)
     expect(stageIndex(card(1, 1, 'forward', 90))).toBe(6)
     expect(stageIndex(card(1, 1, 'forward', 91))).toBe(7)
+  })
+
+  it('places one-direction notes at their actual stage', () => {
+    const spread = activeSpread([
+      card(1, 1, 'forward', 30),
+      card(2, 2, 'reverse', 7),
+    ])
+    expect(spread.stages[3]).toMatchObject({
+      total: 1,
+      segments: { 'content:reverse': 1 },
+    })
+    expect(spread.stages[5]).toMatchObject({
+      total: 1,
+      segments: { 'content:forward': 1 },
+    })
+    expect(spread.stages[0].total).toBe(0)
   })
 })
 

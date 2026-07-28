@@ -5,8 +5,18 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
   server: {
-    proxy: {
-      '/api': 'http://127.0.0.1:3001',
+    watch: {
+      ignored: [
+        '**/.git/**',
+        '**/coverage/**',
+        '**/dist/**',
+        '**/docs/**',
+        '**/server/**',
+        '**/tests/**',
+        '**/*.md',
+        '**/tsconfig*.json',
+        '**/vitest.config.*',
+      ],
     },
   },
 })

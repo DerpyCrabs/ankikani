@@ -52,6 +52,9 @@ export async function ankiMulti<T extends unknown[]>(
 }
 
 export async function ankiHealth() {
-  const version = await ankiInvoke<number>('version')
-  return { connected: true, version, endpoint: ANKI_URL }
+  const [version, profileName] = await Promise.all([
+    ankiInvoke<number>('version'),
+    ankiInvoke<string>('getActiveProfile'),
+  ])
+  return { connected: true, version, endpoint: ANKI_URL, profileName }
 }

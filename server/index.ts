@@ -11,7 +11,7 @@ import {
   mediaFile,
 } from './service'
 import { ankiHealth, AnkiUnavailableError } from './anki'
-import type { FieldMapping } from '../src/lib/domain'
+import type { StudyConfig } from '../src/lib/domain'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const DIST = path.resolve(import.meta.dir, '..', 'dist')
@@ -64,31 +64,36 @@ async function api(request: Request, url: URL): Promise<Response | null> {
     return json(await getDeckProfile(deck))
   }
   if (url.pathname === '/api/dashboard' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; mapping: FieldMapping }>(request)
-    return json(await getDashboard(body.deck, body.mapping))
+    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(await getDashboard(body.deck, body.config))
   }
   if (url.pathname === '/api/sessions/reviews' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; mapping: FieldMapping }>(request)
-    return json(await getReviewSession(body.deck, body.mapping))
+    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(await getReviewSession(body.deck, body.config))
   }
   if (url.pathname === '/api/sessions/lessons' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; mapping: FieldMapping }>(request)
-    return json(await getLessonSession(body.deck, body.mapping))
+    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(await getLessonSession(body.deck, body.config))
   }
   if (url.pathname === '/api/cards' && request.method === 'POST') {
     const body = await requestJson<{
+      deck: string
       cardIds: number[]
-      mapping: FieldMapping
+      config: StudyConfig
     }>(request)
     if (body.cardIds.length > 500) return json({ error: 'Too many cards.' }, 400)
-    return json(await getCards(body.cardIds, body.mapping))
+    return json(await getCards(body.cardIds, body.deck, body.config))
   }
   if (url.pathname === '/api/answer' && request.method === 'POST') {
-    const body = await requestJson<{ cardId: number; ease: number }>(request)
+    const body = await requestJson<{
+      cardId: number
+      ease: number
+      requestId?: string
+    }>(request)
     if (body.ease !== 1 && body.ease !== 3) {
       return json({ error: 'Only Again (1) and Good (3) are allowed.' }, 400)
     }
-    return json(await answerCard(body.cardId, body.ease))
+    return json(await answerCard(body.cardId, body.ease, body.requestId))
   }
   if (url.pathname === '/api/media' && request.method === 'GET') {
     const filename = url.searchParams.get('filename') ?? ''
@@ -103,6 +108,24 @@ async function api(request: Request, url: URL): Promise<Response | null> {
   }
 
   return json({ error: 'Not found.' }, 404)
+}
+
+export async function handleApiRequest(
+  request: Request,
+): Promise<Response | null> {
+  try {
+    return await api(request, new URL(request.url))
+  } catch (error) {
+    const unavailable = error instanceof AnkiUnavailableError
+    const message = error instanceof Error ? error.message : 'Unexpected error.'
+    return json(
+      {
+        error: message,
+        code: unavailable ? 'ANKI_UNAVAILABLE' : 'REQUEST_FAILED',
+      },
+      unavailable ? 503 : 500,
+    )
+  }
 }
 
 async function serveStatic(url: URL): Promise<Response> {
@@ -125,34 +148,26 @@ async function serveStatic(url: URL): Promise<Response> {
   )
 }
 
-const server = Bun.serve({
-  hostname: '0.0.0.0',
-  port: PORT,
-  async fetch(request) {
-    try {
+function startProductionServer() {
+  const server = Bun.serve({
+    hostname: '0.0.0.0',
+    port: PORT,
+    async fetch(request) {
       const url = new URL(request.url)
-      return (await api(request, url)) ?? serveStatic(url)
-    } catch (error) {
-      const unavailable = error instanceof AnkiUnavailableError
-      const message = error instanceof Error ? error.message : 'Unexpected error.'
-      return json(
-        {
-          error: message,
-          code: unavailable ? 'ANKI_UNAVAILABLE' : 'REQUEST_FAILED',
-        },
-        unavailable ? 503 : 500,
-      )
-    }
-  },
-})
+      return (await handleApiRequest(request)) ?? serveStatic(url)
+    },
+  })
 
-const addresses = Object.values(os.networkInterfaces())
-  .flat()
-  .filter(
-    (address): address is NonNullable<typeof address> =>
-      Boolean(address && address.family === 'IPv4' && !address.internal),
-  )
-  .map((address) => `http://${address.address}:${server.port}`)
+  const addresses = Object.values(os.networkInterfaces())
+    .flat()
+    .filter(
+      (address): address is NonNullable<typeof address> =>
+        Boolean(address && address.family === 'IPv4' && !address.internal),
+    )
+    .map((address) => `http://${address.address}:${server.port}`)
 
-console.log(`AnkiKani ready at http://127.0.0.1:${server.port}`)
-for (const address of addresses) console.log(`LAN: ${address}`)
+  console.log(`AnkiKani ready at http://127.0.0.1:${server.port}`)
+  for (const address of addresses) console.log(`LAN: ${address}`)
+}
+
+if (import.meta.main) startProductionServer()

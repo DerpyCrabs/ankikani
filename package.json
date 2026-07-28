@@ -4,9 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run --parallel dev:server dev:web",
-    "dev:server": "bun --watch server/index.ts",
-    "dev:web": "vite --host 0.0.0.0 --open",
+    "dev": "bun --watch server/dev.ts",
     "build": "tsc -b && vite build",
     "start": "bun server/index.ts",
     "test": "vitest run",
