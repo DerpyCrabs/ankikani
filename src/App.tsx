@@ -1,7 +1,6 @@
 import BookOpen from 'lucide-solid/icons/book-open'
 import Brain from 'lucide-solid/icons/brain'
 import Check from 'lucide-solid/icons/check'
-import ChevronDown from 'lucide-solid/icons/chevron-down'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import Flame from 'lucide-solid/icons/flame'
@@ -393,10 +392,6 @@ function Header(props: {
               )}
             </For>
           </select>
-          <ChevronDown
-            aria-hidden="true"
-            class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted)]"
-          />
         </label>
       </div>
     </header>
@@ -1817,7 +1812,6 @@ function StudyRunner(props: {
           : [card.audioFilename].filter(
               (value): value is string => Boolean(value),
             ),
-        1,
       )
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Grade was not saved.')
@@ -2168,11 +2162,10 @@ function NoteContent(props: { value: string }) {
   )
 }
 
-async function playAudioSequence(filenames: string[], rate: number) {
+async function playAudioSequence(filenames: string[]) {
   for (const filename of filenames) {
     await new Promise<void>((resolve) => {
       const audio = new Audio(api.mediaUrl(filename))
-      audio.playbackRate = rate
       audio.addEventListener('ended', () => resolve(), { once: true })
       audio.addEventListener('error', () => resolve(), { once: true })
       void audio.play().catch(() => resolve())
@@ -2187,13 +2180,12 @@ function AudioButton(props: {
   hotkey?: boolean
 }) {
   const [playing, setPlaying] = createSignal(false)
-  const [rate, setRate] = createSignal(1)
   let autoplayKey = ''
 
   async function play() {
     if (!props.filenames.length || playing()) return
     setPlaying(true)
-    await playAudioSequence(props.filenames, rate())
+    await playAudioSequence(props.filenames)
     setPlaying(false)
   }
 
@@ -2227,16 +2219,6 @@ function AudioButton(props: {
           {playing() ? <Headphones class="size-4 animate-pulse" /> : <Volume2 class="size-4" />}
           {props.label ?? 'Replay audio'}
         </button>
-        <select
-          class="h-10 rounded-xl border border-black/10 bg-white px-2 text-sm font-black shadow-sm"
-          aria-label="Playback speed"
-          value={`${rate()}`}
-          onInput={(event) => setRate(Number(event.currentTarget.value))}
-        >
-          <option value="0.75">0.75×</option>
-          <option value="1">1×</option>
-          <option value="1.25">1.25×</option>
-        </select>
       </div>
     </Show>
   )
