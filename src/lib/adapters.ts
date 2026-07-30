@@ -16,7 +16,6 @@ import {
   answerVariants,
   audioFilename,
   audioFilenames,
-  germanAnswerVariants,
   imageFilenames,
   stripAudio,
   stripHtml,
@@ -742,9 +741,9 @@ export function reconcileConfig(
     models: detected.models.map((modelConfig) => {
       const previous = storedByModel.get(modelConfig.modelName)
       if (!previous) return modelConfig
-      return modelConfig.confidence >= 0.85 || !stored.customized
-        ? { ...modelConfig, enabled: previous.enabled }
-        : previous
+      return stored.customized
+        ? previous
+        : { ...modelConfig, enabled: previous.enabled }
     }),
   }
 }
@@ -772,15 +771,18 @@ function details(card: AnkiCardInfo, plan: CardPlan): StudyDetail[] {
 function answerParts(card: AnkiCardInfo, plan: CardPlan): AnswerPart[] {
   if (plan.kind === 'cloze' && plan.clozeField) {
     const content = clozeContent(field(card, plan.clozeField), card.ord)
-    return content.answers.map((answer, index) => ({
-      id: `cloze-${index}`,
-      label: 'Missing text',
-      canonicalAnswer: answer,
-      acceptedAnswers: germanAnswerVariants(answer),
-      language: plan.answerLanguages[index] ?? 'german',
-      required: true,
-      mode: 'single',
-    }))
+    return content.answers.map((answer, index) => {
+      const language = plan.answerLanguages[index] ?? 'german'
+      return {
+        id: `cloze-${index}`,
+        label: 'Missing text',
+        canonicalAnswer: answer,
+        acceptedAnswers: variants(answer, language, plan.answerSeparators),
+        language,
+        required: true,
+        mode: 'single',
+      }
+    })
   }
 
   const createPart = (name: string, index: number): AnswerPart | null => {
@@ -814,7 +816,7 @@ function answerParts(card: AnkiCardInfo, plan: CardPlan): AnswerPart[] {
       acceptedAnswers: [
         ...new Set(parts.flatMap((part) => part.acceptedAnswers)),
       ],
-      required: parts.every((part) => part.required),
+      required: parts.some((part) => part.required),
     }]
   }
 

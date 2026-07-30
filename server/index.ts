@@ -102,7 +102,9 @@ async function api(request: Request, url: URL): Promise<Response | null> {
     return new Response(bytes, {
       headers: {
         'content-type': contentType(filename),
-        'cache-control': 'private, max-age=3600',
+        // Media filenames can refer to different bytes after an Anki profile
+        // switch, while the browser URL remains unchanged.
+        'cache-control': 'no-store',
       },
     })
   }

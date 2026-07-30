@@ -14,6 +14,7 @@ vi.mock('../server/anki', () => ({
 import {
   GOETHE_MAPPING,
   answerCard,
+  getCards,
   getDashboard,
   getLessonSession,
   getReviewSession,
@@ -126,6 +127,65 @@ describe('lesson integration', () => {
       items: [],
       quizCards: [],
     })
+  })
+
+  it('finds enabled note types beyond incompatible new cards', async () => {
+    const ids = Array.from({ length: 202 }, (_, index) => index + 1)
+    mocks.invoke.mockImplementation(
+      async (action: string, params: { cards?: number[] }) => {
+        if (action === 'getDeckStats') {
+          return {
+            2: {
+              deck_id: 2,
+              name: 'German',
+              new_count: 2,
+              learn_count: 0,
+              review_count: 0,
+              total_in_deck: 202,
+            },
+          }
+        }
+        if (action === 'findCards') return ids
+        if (action === 'cardsInfo') {
+          return (params.cards ?? []).map((cardId) =>
+            cardId <= 200
+              ? ankiCard(cardId, cardId, 0, {
+                  modelName: 'Disabled note type',
+                })
+              : ankiCard(cardId, 500, cardId === 201 ? 0 : 1),
+          )
+        }
+        throw new Error(`Unexpected action ${action}`)
+      },
+    )
+
+    const lesson = await getLessonSession('German', GOETHE_MAPPING)
+    expect(lesson.items).toHaveLength(1)
+    expect(lesson.quizCards).toHaveLength(2)
+  })
+})
+
+describe('card loading', () => {
+  it('chunks large cardsInfo requests before sending them to AnkiConnect', async () => {
+    mocks.invoke.mockImplementation(
+      async (action: string, params: { cards?: number[] }) => {
+        if (action !== 'cardsInfo') throw new Error(`Unexpected action ${action}`)
+        return (params.cards ?? []).map((cardId) =>
+          ankiCard(cardId, cardId, 0),
+        )
+      },
+    )
+    const ids = Array.from({ length: 501 }, (_, index) => index + 1)
+
+    await expect(getCards(ids, 'German', GOETHE_MAPPING)).resolves.toHaveLength(
+      501,
+    )
+    const cardCalls = mocks.invoke.mock.calls.filter(
+      ([action]) => action === 'cardsInfo',
+    )
+    expect(cardCalls).toHaveLength(2)
+    expect(cardCalls[0]?.[1].cards).toHaveLength(500)
+    expect(cardCalls[1]?.[1].cards).toHaveLength(1)
   })
 })
 

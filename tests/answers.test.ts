@@ -63,6 +63,13 @@ describe('German answer parsing', () => {
     expect(foldAnswer('FÜR', true)).toBe('fuer')
   })
 
+  it('decodes HTML entities before matching', () => {
+    expect(checkAnswer('der Kaese', 'der K&auml;se', 'german').correct).toBe(
+      true,
+    )
+    expect(checkAnswer('für', 'f&#252;r', 'german').correct).toBe(true)
+  })
+
   it('removes punctuation and normalizes whitespace and case', () => {
     expect(checkAnswer('  ZUM beispiel ', 'zum Beispiel/z. B.', 'german').correct)
       .toBe(true)

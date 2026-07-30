@@ -121,6 +121,9 @@ function supportedProfile(deckName = 'German') {
 
 beforeEach(() => {
   vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue()
+  vi.spyOn(window.HTMLMediaElement.prototype, 'pause').mockImplementation(
+    () => undefined,
+  )
   localStorage.clear()
   window.history.replaceState({}, '', '/')
   mocks.health.mockReset().mockResolvedValue({
@@ -156,8 +159,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.restoreAllMocks()
   cleanup()
+  vi.restoreAllMocks()
 })
 
 describe('application integration', () => {
@@ -213,6 +216,33 @@ describe('application integration', () => {
     })
     await screen.findByText('Nothing to study here yet')
     expect(mocks.profile).toHaveBeenCalledWith('Default')
+  })
+
+  it('leaves an active session when the Anki profile changes', async () => {
+    let activeProfile = 'First profile'
+    mocks.health.mockImplementation(async () => ({
+      connected: true,
+      version: 6,
+      endpoint: 'http://127.0.0.1:8765',
+      profileName: activeProfile,
+    }))
+    localStorage.setItem(profileKey('First profile'), 'German')
+    localStorage.setItem(profileKey('Second profile'), 'German')
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    await screen.findByRole('heading', { name: reviewCard.prompt })
+    expect(window.location.pathname).toBe('/reviews')
+
+    activeProfile = 'Second profile'
+    window.dispatchEvent(new window.Event('focus'))
+
+    await screen.findByRole('heading', { name: 'Lessons' })
+    expect(window.location.pathname).toBe('/')
   })
 
   it('loads oversized forecast days in endpoint-sized chunks', async () => {
@@ -298,7 +328,7 @@ describe('application integration', () => {
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
-    await screen.findByRole('button', { name: 'Check correction' })
+    await screen.findByRole('button', { name: 'Continue' })
     expect(mocks.dashboard).not.toHaveBeenCalled()
     expect(window.location.pathname).toBe('/reviews')
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
@@ -350,6 +380,39 @@ describe('application integration', () => {
     expect(mocks.cards.mock.calls[1]?.[1]).toHaveLength(1)
   })
 
+  it('preserves practice-only cards while restoring a session', async () => {
+    const storage = sessionStorageKey(
+      deckStorageId('Test', supportedProfile()),
+      'review',
+    )
+    localStorage.setItem(
+      storage,
+      JSON.stringify({
+        index: 0,
+        phase: 'answering',
+        input: '',
+        result: null,
+        cards: [{ ...reviewCard, practiceOnly: true }],
+      }),
+    )
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard],
+    })
+    mocks.cards.mockResolvedValue([reviewCard])
+    window.history.replaceState({}, '', '/reviews')
+
+    render(() => <App />)
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, {
+      target: { value: reviewCard.canonicalAnswer },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Continue' })
+
+    expect(mocks.answer).not.toHaveBeenCalled()
+  })
+
   it('does not color article-like text on non-German cards', async () => {
     const englishCard: StudyCard = {
       ...reviewCard,
@@ -383,12 +446,12 @@ describe('application integration', () => {
     window.history.replaceState({}, '', '/reviews')
 
     render(() => <App />)
-    await screen.findByRole('button', { name: 'Check correction' })
+    await screen.findByRole('button', { name: 'Continue' })
     const expectedAnswer = screen.getByText('die hard')
     expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
   })
 
-  it('shows incorrect correction feedback before advancing', async () => {
+  it('continues with Again without a separate correction check', async () => {
     const nextCard: StudyCard = {
       ...reviewCard,
       cardId: reviewCard.cardId + 1,
@@ -407,22 +470,17 @@ describe('application integration', () => {
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
-    await screen.findByRole('button', { name: 'Check correction' })
+    await screen.findByRole('button', { name: 'Continue' })
     expect(mocks.answer).not.toHaveBeenCalled()
     expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check correction' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(mocks.answer).toHaveBeenCalledWith(
       reviewCard.cardId,
       1,
       expect.any(String),
     )
-    await screen.findByRole('button', { name: 'Continue' })
-    expect(
-      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
-    ).toContain('var(--coral-soft)')
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await screen.findByRole('heading', { name: nextCard.prompt })
   })
 
@@ -443,7 +501,7 @@ describe('application integration', () => {
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
-    await screen.findByRole('button', { name: 'Check correction' })
+    await screen.findByRole('button', { name: 'Continue' })
     expect(input.readOnly).toBe(true)
     fireEvent.keyDown(input, { key: 'j' })
     expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled()
@@ -452,20 +510,94 @@ describe('application integration', () => {
     expect(input.readOnly).toBe(false)
     expect(input.value).toBe('')
     fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
-    fireEvent.click(screen.getByRole('button', { name: 'Check correction' }))
-
-    await screen.findByRole('button', { name: 'Continue' })
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('var(--mint-soft)')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(mocks.answer).toHaveBeenCalledWith(
       reviewCard.cardId,
       3,
       expect.any(String),
     )
-    expect(
-      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
-    ).toContain('var(--mint-soft)')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await screen.findByRole('heading', { name: nextCard.prompt })
+  })
+
+  it('does not advance when a retyped correction is still wrong', async () => {
+    const nextCard: StudyCard = {
+      ...reviewCard,
+      cardId: reviewCard.cardId + 1,
+      noteId: reviewCard.noteId + 1,
+      prompt: 'connection',
+    }
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard, nextCard],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    const continueButton = await screen.findByRole('button', { name: 'Continue' })
+
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    fireEvent.input(input, { target: { value: 'still wrong' } })
+
+    expect((continueButton as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.submit(input.closest('form')!)
+    expect(mocks.answer).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: reviewCard.prompt })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: nextCard.prompt })).toBeNull()
+  })
+
+  it('replays only answer audio after correction details are shown', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [{
+        ...reviewCard,
+        promptAudioFilename: 'prompt.mp3',
+        promptAudioFilenames: ['prompt.mp3'],
+      }],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Continue' })
+
+    fireEvent.keyDown(input, { key: 'j' })
+    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }))
+    expect(window.HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores malformed saved review state', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard],
+    })
+    const storage = sessionStorageKey(
+      deckStorageId('Test', supportedProfile()),
+      'review',
+    )
+    localStorage.setItem(
+      storage,
+      JSON.stringify({
+        index: -3,
+        phase: 'broken',
+        inputs: 42,
+        cards: 'not cards',
+      }),
+    )
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    expect(await screen.findByRole('heading', { name: reviewCard.prompt }))
+      .toBeTruthy()
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('')
   })
 
   it('does not leave dashboard for a saved session', async () => {
@@ -513,7 +645,7 @@ describe('application integration', () => {
     await screen.findByText(reviewCard.prompt)
     expect(window.location.pathname).toBe('/reviews')
     expect(screen.queryByText('Recall this')).toBeNull()
-    expect(screen.queryByText('1 / 1')).toBeNull()
+    expect(screen.getAllByText('1 / 1')).toHaveLength(1)
     expect(screen.getByRole('progressbar', { name: 'Session progress' }).getAttribute('aria-valuenow')).toBe('1')
     fireEvent.input(screen.getByRole('textbox'), {
       target: { value: reviewCard.canonicalAnswer },
@@ -532,6 +664,25 @@ describe('application integration', () => {
     expect(window.location.pathname).toBe('/lessons')
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(window.location.pathname).toBe('/lessons')
+  })
+
+  it('returns to the selected deck dashboard when switching decks in a session', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    await screen.findByRole('heading', { name: reviewCard.prompt })
+    expect(window.location.pathname).toBe('/reviews')
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Active deck' }), {
+      target: { value: 'Default' },
+    })
+
+    await screen.findByText('Nothing to study here yet')
+    expect(window.location.pathname).toBe('/')
   })
 
   it('retries a failed session load without leaving the route', async () => {

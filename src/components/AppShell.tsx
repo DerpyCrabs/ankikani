@@ -67,7 +67,7 @@ export function ConnectionScreen(props: {
           </Show>
         </div>
         <h1 class="text-3xl font-black tracking-[-0.04em]">
-          {props.connected === null ? 'Finding Ankiâ€¦' : 'Anki is out of reach'}
+          {props.connected === null ? 'Finding Anki…' : 'Anki is out of reach'}
         </h1>
         <p class="mt-3 leading-7 text-[var(--muted)]">
           {props.connected === null
@@ -116,7 +116,7 @@ export function DeckLoading(props: { error: string; retry: () => void }) {
         <CircleAlert class="mx-auto size-9 text-[var(--coral)]" />
       </Show>
       <h1 class="mt-5 text-xl font-black">
-        {props.error ? 'Could not read deck setup' : 'Reading deck setupâ€¦'}
+        {props.error ? 'Could not read deck setup' : 'Reading deck setup…'}
       </h1>
       <Show when={props.error}>
         <p class="mt-3 text-sm text-[var(--muted)]">{props.error}</p>

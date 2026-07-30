@@ -126,6 +126,66 @@ describe('study-card adapters', () => {
     })
   })
 
+  it('uses configured language rules for cloze alternatives', () => {
+    const sample = card('English Cloze', 0, {
+      Text: 'It is {{c1::information/details}}.',
+    })
+    const adapted = adaptCard(sample, {
+      version: 2,
+      deckName: 'German',
+      includeSubdecks: true,
+      models: [{
+        modelName: 'English Cloze',
+        enabled: true,
+        kind: 'cloze',
+        label: 'English cloze',
+        confidence: 1,
+        plans: [{
+          ord: 0,
+          kind: 'cloze',
+          direction: 'forward',
+          directionLabel: 'English cloze',
+          clozeField: 'Text',
+          answerFields: [],
+          answerLanguages: ['english'],
+        }],
+      }],
+    })
+    expect(adapted?.acceptedAnswers).toEqual(['information', 'details'])
+  })
+
+  it('keeps alternatives required when any source field is required', () => {
+    const sample = card('Aliases', 0, {
+      Prompt: 'announcement',
+      Primary: 'die Ansage',
+      OptionalAlias: '',
+    })
+    const adapted = adaptCard(sample, {
+      version: 2,
+      deckName: 'German',
+      includeSubdecks: true,
+      models: [{
+        modelName: 'Aliases',
+        enabled: true,
+        kind: 'text',
+        label: 'Aliases',
+        confidence: 1,
+        plans: [{
+          ord: 0,
+          kind: 'text',
+          direction: 'reverse',
+          directionLabel: 'English → German',
+          promptField: 'Prompt',
+          answerFields: ['Primary', 'OptionalAlias'],
+          answerLanguages: ['german', 'german'],
+          answerMode: 'alternatives',
+          optionalAnswerFields: ['OptionalAlias'],
+        }],
+      }],
+    })
+    expect(adapted?.answerParts?.[0].required).toBe(true)
+  })
+
   it('uses audio as listening prompt', () => {
     const sample = card('German Listening (audio-only front)', 0, {
       Audio: '[sound:hallo.mp3]',
@@ -334,5 +394,28 @@ describe('deck compatibility', () => {
         detected,
       )?.models[0].plans[0].promptField,
     ).toBe('Front')
+  })
+
+  it('keeps deliberate mappings for high-confidence note types', () => {
+    const official = card('German English Word Card', 0, {
+      de_word: 'die Ansage',
+      en_word: 'announcement',
+      de_tts_audio: '',
+    })
+    const detected = configFor(official)
+    const edited = {
+      ...detected,
+      customized: true,
+      models: [{
+        ...detected.models[0],
+        plans: [{
+          ...detected.models[0].plans[0],
+          promptField: 'en_word',
+        }],
+      }],
+    }
+    expect(
+      reconcileConfig(edited, detected)?.models[0].plans[0].promptField,
+    ).toBe('en_word')
   })
 })

@@ -30,7 +30,7 @@ export function DeckSetup(props: {
             ord: 0,
             kind: 'text',
             direction: 'forward',
-            directionLabel: `${fields[0] ?? 'Prompt'} â†’ ${fields[1] ?? 'Answer'}`,
+            directionLabel: `${fields[0] ?? 'Prompt'} → ${fields[1] ?? 'Answer'}`,
             promptField: fields[0],
             answerFields: fields[1] ? [fields[1]] : [],
             answerLanguages: ['plain'],
@@ -174,7 +174,12 @@ export function DeckSetup(props: {
       })
     })
   const setTargetLanguage = (value: AnswerLanguage) =>
-    updatePlan(0, (plan) => { plan.answerLanguages = [value] })
+    updatePlan(0, (plan) => {
+      plan.answerLanguages = [
+        value,
+        ...plan.answerLanguages.slice(1),
+      ]
+    })
   const setSourceExample = (value: string) =>
     updateModel(selectedIndex(), (model) => {
       model.plans.forEach((plan) => {
@@ -258,7 +263,7 @@ export function DeckSetup(props: {
                     </span>
                     <span class="mt-1 block text-sm text-[var(--muted)]">
                       {model.label}
-                      <Show when={report()}> Â· {report()?.noteCount} notes</Show>
+                      <Show when={report()}> · {report()?.noteCount} notes</Show>
                     </span>
                   </span>
                 </label>
@@ -383,13 +388,13 @@ export function DeckSetup(props: {
           <FieldSelect label="Optional note" value={note()} options={fields()} onInput={setNote} optional />
           <FieldSelect label="Audio" value={audio()} options={fields()} onInput={setAudio} optional />
           <TemplateSelect
-            label="Source â†’ target card"
+            label="Source → target card"
             names={templateNames()}
             value={forwardOrd()}
             onInput={setForwardOrd}
           />
           <TemplateSelect
-            label="Target â†’ source card"
+            label="Target → source card"
             names={templateNames()}
             value={reverseOrd()}
             onInput={setReverseOrd}

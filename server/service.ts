@@ -87,7 +87,15 @@ async function deckStats(deckName: string): Promise<DeckStats> {
 
 async function cardsInfo(cardIds: number[]): Promise<AnkiCardInfo[]> {
   if (!cardIds.length) return []
-  return ankiInvoke<AnkiCardInfo[]>('cardsInfo', { cards: cardIds })
+  const cards: AnkiCardInfo[] = []
+  for (let offset = 0; offset < cardIds.length; offset += 500) {
+    cards.push(
+      ...(await ankiInvoke<AnkiCardInfo[]>('cardsInfo', {
+        cards: cardIds.slice(offset, offset + 500),
+      })),
+    )
+  }
+  return cards
 }
 
 async function mappedCards(
@@ -369,7 +377,7 @@ export async function getLessonSession(
     query: `${quotedDeck(deckName)} is:new -is:suspended -is:buried`,
   })
   const candidates = await mappedCards(
-    newIds.slice(0, Math.max(200, stats.new_count * 10)),
+    newIds,
     deckName,
     configuration,
   )

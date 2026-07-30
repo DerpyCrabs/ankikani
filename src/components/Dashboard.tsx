@@ -181,7 +181,11 @@ function StreakCard(props: { data: DashboardData }) {
           </strong>
           <p class="mt-1 text-lg font-bold">Day study streak</p>
           <p class="mt-3 text-sm font-semibold text-[var(--muted)]">
-            Best streak: <span class="text-[var(--ink)]">{props.data.bestStreak} days</span>
+            Best streak:{' '}
+            <span class="text-[var(--ink)]">
+              {props.data.bestStreak}{' '}
+              {props.data.bestStreak === 1 ? 'day' : 'days'}
+            </span>
           </p>
         </div>
       </div>
@@ -333,8 +337,15 @@ function DashboardSkeleton(props: { error: unknown; retry: () => void }) {
       }
     >
       <div class="grid animate-pulse gap-5 lg:grid-cols-12">
-        <For each={[4, 4, 4, 5, 7, 12]}>
-          {(span) => <div class={`h-64 rounded-[24px] bg-black/6 lg:col-span-${span}`} />}
+        <For each={[
+          'lg:col-span-4',
+          'lg:col-span-4',
+          'lg:col-span-4',
+          'lg:col-span-5',
+          'lg:col-span-7',
+          'lg:col-span-12',
+        ]}>
+          {(span) => <div class={`h-64 rounded-[24px] bg-black/6 ${span}`} />}
         </For>
       </div>
     </Show>
@@ -347,7 +358,7 @@ function DueCardsDialog(props: {
   configuration: StudyConfig
   onClose: () => void
 }) {
-  const [cards] = createResource(
+  const [cards, { refetch }] = createResource(
     () => props.day.cardIds,
     (ids) => loadCards(props.deckName, ids, props.configuration),
   )
@@ -378,7 +389,7 @@ function DueCardsDialog(props: {
           <div>
             <p class="eyebrow">{props.day.date}</p>
             <h2 id="due-title" class="mt-1 text-xl font-black">
-              {props.day.label} Â· {props.day.count} scheduled
+              {props.day.label} · {props.day.count} scheduled
             </h2>
           </div>
           <button class="icon-button" onClick={props.onClose} aria-label="Close">
@@ -390,23 +401,42 @@ function DueCardsDialog(props: {
             when={!cards.loading}
             fallback={<LoaderCircle class="mx-auto my-12 size-7 animate-spin" />}
           >
-            <div class="space-y-2">
-              <For each={cards()}>
-                {(card) => (
-                  <div class="flex items-center justify-between gap-4 rounded-xl bg-[var(--paper)] px-4 py-3">
-                    <div class="min-w-0">
-                      <p class="truncate font-black">{card.prompt}</p>
-                      <p class="truncate text-sm text-[var(--muted)]">
-                        {card.directionLabel}
-                      </p>
+            <Show
+              when={!cards.error}
+              fallback={
+                <div class="my-10 text-center">
+                  <p role="alert" class="text-sm font-semibold text-[var(--muted)]">
+                    {cards.error instanceof Error
+                      ? cards.error.message
+                      : 'Scheduled cards could not load.'}
+                  </p>
+                  <button
+                    class="button-quiet mt-4"
+                    onClick={() => void refetch()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              }
+            >
+              <div class="space-y-2">
+                <For each={cards()}>
+                  {(card) => (
+                    <div class="flex items-center justify-between gap-4 rounded-xl bg-[var(--paper)] px-4 py-3">
+                      <div class="min-w-0">
+                        <p class="truncate font-black">{card.prompt}</p>
+                        <p class="truncate text-sm text-[var(--muted)]">
+                          {card.directionLabel}
+                        </p>
+                      </div>
+                      <span class="shrink-0 text-sm font-bold text-[var(--muted)]">
+                        {card.interval}d
+                      </span>
                     </div>
-                    <span class="shrink-0 text-sm font-bold text-[var(--muted)]">
-                      {card.interval}d
-                    </span>
-                  </div>
-                )}
-              </For>
-            </div>
+                  )}
+                </For>
+              </div>
+            </Show>
           </Show>
         </div>
       </section>

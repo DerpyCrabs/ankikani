@@ -14,6 +14,63 @@ import type { AnswerLanguage, AnswerPart, LessonItem, StudyCard, StudyConfig } f
 
 type StudyPhase = 'answering' | 'correction' | 'feedback'
 
+interface StoredStudySession {
+  index: number
+  phase: StudyPhase
+  input: string
+  inputs?: string[]
+  result: 'correct' | 'incorrect' | null
+  gradeRequestId?: string
+  correctionUnlocked?: boolean
+  cards?: StudyCard[]
+}
+
+function readStoredStudySession(storage: string): StoredStudySession | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(storage) ?? 'null') as unknown
+    if (!value || typeof value !== 'object') return null
+    const candidate = value as Partial<StoredStudySession>
+    if (
+      !Number.isInteger(candidate.index) ||
+      (candidate.index ?? -1) < 0 ||
+      !['answering', 'correction', 'feedback'].includes(candidate.phase ?? '') ||
+      !['correct', 'incorrect', null].includes(candidate.result ?? null) ||
+      (candidate.inputs !== undefined &&
+        (
+          !Array.isArray(candidate.inputs) ||
+          !candidate.inputs.every((input) => typeof input === 'string')
+        )) ||
+      (candidate.cards !== undefined &&
+        (
+          !Array.isArray(candidate.cards) ||
+          !candidate.cards.every(
+            (card) =>
+              card &&
+              typeof card === 'object' &&
+              Number.isFinite(card.cardId),
+          )
+        ))
+    ) {
+      return null
+    }
+    return {
+      index: candidate.index!,
+      phase: candidate.phase!,
+      input: typeof candidate.input === 'string' ? candidate.input : '',
+      inputs: candidate.inputs,
+      result: candidate.result ?? null,
+      gradeRequestId:
+        typeof candidate.gradeRequestId === 'string'
+          ? candidate.gradeRequestId
+          : '',
+      correctionUnlocked: candidate.correctionUnlocked === true,
+      cards: candidate.cards,
+    }
+  } catch {
+    return null
+  }
+}
+
 function createRecoverableLoad<T>(
   source: () => string,
   load: () => Promise<T>,
@@ -61,12 +118,18 @@ export function LessonSession(props: {
   )
   const restored = (() => {
     try {
-      return JSON.parse(
+      const value = JSON.parse(
         localStorage.getItem(teachingStorage) ?? 'null',
       ) as {
         teachingIndex: number
         quizzing: boolean
       } | null
+      return value &&
+        Number.isInteger(value.teachingIndex) &&
+        value.teachingIndex >= 0 &&
+        typeof value.quizzing === 'boolean'
+        ? value
+        : null
     } catch {
       return null
     }
@@ -119,8 +182,12 @@ export function LessonSession(props: {
             when={quizzing()}
             fallback={
               <LessonTeaching
-                item={lesson().items[teachingIndex()]!}
-                index={teachingIndex()}
+                item={
+                  lesson().items[
+                    Math.min(teachingIndex(), lesson().items.length - 1)
+                  ]!
+                }
+                index={Math.min(teachingIndex(), lesson().items.length - 1)}
                 total={lesson().items.length}
                 onNext={() => {
                   if (teachingIndex() + 1 >= lesson().items.length) setQuizzing(true)
@@ -185,6 +252,10 @@ function LessonTeaching(props: {
   total: number
   onNext: () => void
 }) {
+  const nextLesson = () => {
+    stopAudioPlayback()
+    props.onNext()
+  }
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -193,11 +264,14 @@ function LessonTeaching(props: {
         !target?.matches('input, textarea, select, button')
       ) {
         event.preventDefault()
-        props.onNext()
+        nextLesson()
       }
     }
     window.addEventListener('keydown', onKeyDown)
-    onCleanup(() => window.removeEventListener('keydown', onKeyDown))
+    onCleanup(() => {
+      window.removeEventListener('keydown', onKeyDown)
+      stopAudioPlayback()
+    })
   })
   const card = () => props.item.cards[0]
   const visibleDetails = () =>
@@ -212,7 +286,7 @@ function LessonTeaching(props: {
     )
   return (
     <StudyShell
-      progress={props.index}
+      progress={props.index + 1}
       total={props.total}
     >
       <article class="mx-auto w-full max-w-3xl">
@@ -233,7 +307,7 @@ function LessonTeaching(props: {
               autoplay={props.item.contentKind === 'audio'}
               hotkey
             />
-            <button class="button-soft-primary" onClick={props.onNext}>
+            <button class="button-soft-primary" onClick={nextLesson}>
               {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
               <ChevronRight class="size-4" />
             </button>
@@ -305,24 +379,7 @@ function StudyRunner(props: {
           language: card.direction === 'reverse' ? 'german' : 'english',
         }]
   const storage = sessionStorageKey(props.storageId, props.mode)
-  const restored = (() => {
-    try {
-      return JSON.parse(
-        localStorage.getItem(storage) ?? 'null',
-      ) as {
-        index: number
-        phase: StudyPhase
-        input: string
-        inputs?: string[]
-        result: 'correct' | 'incorrect' | null
-        gradeRequestId?: string
-        correctionUnlocked?: boolean
-        cards?: StudyCard[]
-      } | null
-    } catch {
-      return null
-    }
-  })()
+  const restored = readStoredStudySession(storage)
   const restoredCards = restored?.cards?.length ? restored.cards : null
   const initialCards = restoredCards ? [] : props.cards
   const [sessionCards, setSessionCards] = createSignal<StudyCard[]>(initialCards)
@@ -352,6 +409,19 @@ function StudyRunner(props: {
   let answerInput: HTMLInputElement | undefined
   const current = createMemo(() => sessionCards()[index()])
   const progress = createMemo(() => index() + 1)
+  const correctionIsCorrect = createMemo(() => {
+    const card = current()
+    if (
+      !card ||
+      phase() !== 'correction' ||
+      !correctionUnlocked()
+    ) {
+      return false
+    }
+    return partsFor(card).every((part, partIndex) =>
+      matchesAnswerPart(inputs()[partIndex] ?? '', part),
+    )
+  })
 
   async function restoreCards() {
     if (!restoredCards) return
@@ -366,7 +436,12 @@ function StudyRunner(props: {
       )
       const byId = new Map(currentCards.map((card) => [card.cardId, card]))
       const refreshed = ids
-        .map((cardId) => byId.get(cardId))
+        .map((cardId, cardIndex) => {
+          const card = byId.get(cardId)
+          return card && restoredCards[cardIndex]?.practiceOnly
+            ? { ...card, practiceOnly: true }
+            : card
+        })
         .filter((card): card is StudyCard => Boolean(card))
       if (refreshed.length === ids.length) {
         setSessionCards(refreshed)
@@ -394,6 +469,7 @@ function StudyRunner(props: {
   onMount(() => {
     if (restoredCards) void restoreCards()
   })
+  onCleanup(stopAudioPlayback)
 
   createEffect(() => {
     if (restoring() || restoreError()) return
@@ -425,9 +501,10 @@ function StudyRunner(props: {
   async function save(
     ease: 1 | 3,
     outcome: 'correct' | 'incorrect',
+    showFeedback = true,
   ) {
     const card = current()
-    if (!card || saving()) return
+    if (!card || saving()) return false
     setSaving(true)
     setError('')
     try {
@@ -439,23 +516,27 @@ function StudyRunner(props: {
         setGradeRequestId(requestId)
         await api.answer(card.cardId, ease, requestId)
       }
-      setResult(outcome)
-      setPhase('feedback')
       if (props.mode === 'lesson' && outcome === 'incorrect') {
         setSessionCards((cards) => [
           ...cards,
           { ...card, practiceOnly: true },
         ])
       }
-      void playAudioSequence(
-        card.audioFilenames?.length
-          ? card.audioFilenames
-          : [card.audioFilename].filter(
-              (value): value is string => Boolean(value),
-            ),
-      )
+      if (showFeedback) {
+        setResult(outcome)
+        setPhase('feedback')
+        void playAudioSequence(
+          card.audioFilenames?.length
+            ? card.audioFilenames
+            : [card.audioFilename].filter(
+                (value): value is string => Boolean(value),
+              ),
+        )
+      }
+      return true
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Grade was not saved.')
+      return false
     } finally {
       setSaving(false)
     }
@@ -483,28 +564,34 @@ function StudyRunner(props: {
       const correct = parts.every((part, partIndex) =>
         matchesAnswerPart(inputs()[partIndex] ?? '', part),
       )
-      await save(
+      if (correctionUnlocked() && !correct) return
+      const saved = await save(
         correct ? 3 : 1,
         correct ? 'correct' : 'incorrect',
+        false,
       )
+      if (saved) next()
       return
     }
     next()
   }
 
   function next() {
+    stopAudioPlayback()
     if (index() + 1 >= sessionCards().length) {
       localStorage.removeItem(storage)
       setIndex(sessionCards().length)
       return
     }
-    setIndex((value) => value + 1)
-    setInputs([])
-    setPhase('answering')
-    setResult(null)
-    setGradeRequestId('')
-    setCorrectionUnlocked(false)
-    setError('')
+    batch(() => {
+      setIndex((value) => value + 1)
+      setInputs([])
+      setPhase('answering')
+      setResult(null)
+      setGradeRequestId('')
+      setCorrectionUnlocked(false)
+      setError('')
+    })
   }
 
   return (
@@ -533,13 +620,18 @@ function StudyRunner(props: {
         <StudyShell
           progress={progress()}
           total={sessionCards().length}
+          showCount
           announcement={
             error()
               ? `Connection interrupted. Answer preserved. ${error()}`
               : saving()
                 ? 'Saving answer to Anki.'
                 : phase() === 'correction'
-                  ? 'Answer needs correction. Answer details are shown.'
+                  ? correctionIsCorrect()
+                    ? 'Correction accepted. Continue when ready.'
+                    : correctionUnlocked()
+                      ? 'Correction is still incorrect.'
+                      : 'Answer details are shown. Backspace to correct it, or continue.'
                   : phase() === 'feedback'
                     ? result() === 'correct'
                       ? 'Answer accepted.'
@@ -551,7 +643,9 @@ function StudyRunner(props: {
             <div
               class={`card-shell p-6 transition-colors sm:p-8 ${
                 phase() === 'correction'
-                  ? 'bg-[var(--coral-soft)]'
+                  ? correctionIsCorrect()
+                    ? 'bg-[var(--mint-soft)]'
+                    : 'bg-[var(--coral-soft)]'
                   : phase() === 'feedback'
                     ? result() === 'correct'
                       ? 'bg-[var(--mint-soft)]'
@@ -561,7 +655,9 @@ function StudyRunner(props: {
               style={{
                 'background-color':
                   phase() === 'correction'
-                    ? 'var(--coral-soft)'
+                    ? correctionIsCorrect()
+                      ? 'var(--mint-soft)'
+                      : 'var(--coral-soft)'
                     : phase() === 'feedback'
                       ? result() === 'correct'
                         ? 'var(--mint-soft)'
@@ -581,7 +677,7 @@ function StudyRunner(props: {
                     }
                     label="Play prompt"
                     autoplay={card().contentKind === 'audio'}
-                    hotkey
+                    hotkey={phase() === 'answering'}
                   />
                 </div>
               </Show>
@@ -622,7 +718,9 @@ function StudyRunner(props: {
                           aria-label={part.label}
                           class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
                             phase() === 'correction'
-                              ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
+                              ? correctionIsCorrect()
+                                ? 'border-[var(--mint)] focus:ring-4 focus:ring-[color:var(--mint)]/15'
+                                : 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
                               : phase() === 'feedback'
                                 ? result() === 'correct'
                                   ? 'border-[var(--mint)]'
@@ -631,6 +729,7 @@ function StudyRunner(props: {
                           }`}
                           value={inputs()[partIndex()] ?? ''}
                           readOnly={
+                            saving() ||
                             phase() === 'feedback' ||
                             (phase() === 'correction' && !correctionUnlocked())
                           }
@@ -678,10 +777,20 @@ function StudyRunner(props: {
                 </Show>
 
                 <div class="mx-auto mt-5 max-w-sm">
-                <button class="button-soft-primary w-full" disabled={saving()}>
-                  <Show when={saving()} fallback={phase() === 'feedback' ? 'Continue' : phase() === 'correction' ? 'Check correction' : 'Check answer'}>
+                <button
+                  class="button-soft-primary w-full"
+                  disabled={
+                    saving() ||
+                    (
+                      phase() === 'correction' &&
+                      correctionUnlocked() &&
+                      !correctionIsCorrect()
+                    )
+                  }
+                >
+                  <Show when={saving()} fallback={phase() === 'feedback' || phase() === 'correction' ? 'Continue' : 'Check answer'}>
                     <LoaderCircle class="size-4 animate-spin" />
-                    Saving to Ankiâ€¦
+                    Saving to Anki…
                   </Show>
                   <Show when={!saving()}><ChevronRight class="size-4" /></Show>
                 </button>
@@ -824,13 +933,37 @@ function NoteContent(props: { value: string }) {
   )
 }
 
+let audioGeneration = 0
+let stopActiveAudio: (() => void) | null = null
+
+function stopAudioPlayback() {
+  audioGeneration += 1
+  stopActiveAudio?.()
+  stopActiveAudio = null
+}
+
 async function playAudioSequence(filenames: string[]) {
+  stopAudioPlayback()
+  const generation = audioGeneration
   for (const filename of filenames) {
+    if (generation !== audioGeneration) return
     await new Promise<void>((resolve) => {
       const audio = new Audio(api.mediaUrl(filename))
-      audio.addEventListener('ended', () => resolve(), { once: true })
-      audio.addEventListener('error', () => resolve(), { once: true })
-      void audio.play().catch(() => resolve())
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        if (stopActiveAudio === cancel) stopActiveAudio = null
+        resolve()
+      }
+      const cancel = () => {
+        audio.pause()
+        finish()
+      }
+      stopActiveAudio = cancel
+      audio.addEventListener('ended', finish, { once: true })
+      audio.addEventListener('error', finish, { once: true })
+      void audio.play().catch(finish)
     })
   }
 }
@@ -859,8 +992,8 @@ function AudioButton(props: {
   })
 
   onMount(() => {
-    if (!props.hotkey) return
     const replay = (event: KeyboardEvent) => {
+      if (!props.hotkey) return
       const target = event.target as HTMLElement | null
       const editing =
         target instanceof HTMLInputElement
@@ -889,6 +1022,7 @@ function AudioButton(props: {
 function StudyShell(props: {
   progress: number
   total: number
+  showCount?: boolean
   announcement?: string
   children: unknown
 }) {
@@ -909,6 +1043,13 @@ function StudyShell(props: {
           />
         </div>
       </div>
+      <Show when={props.showCount}>
+        <div class="mx-auto mb-3 flex w-full max-w-xl justify-end px-1">
+          <span class="text-xs font-black tabular-nums text-[var(--muted)]">
+            {Math.min(props.progress, props.total)} / {props.total}
+          </span>
+        </div>
+      </Show>
       <Show when={props.announcement}>
         <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {props.announcement}
@@ -980,7 +1121,11 @@ function SessionComplete(props: {
       </div>
       <p class="eyebrow mt-8">Session complete</p>
       <h1 class="mt-2 text-4xl font-black tracking-[-0.05em]">
-        {props.count} {props.mode === 'lesson' ? 'quiz answers' : 'reviews'} done
+        {props.count}{' '}
+        {props.mode === 'lesson'
+          ? props.count === 1 ? 'quiz answer' : 'quiz answers'
+          : props.count === 1 ? 'review' : 'reviews'}{' '}
+        done
       </h1>
       <p class="mt-4 text-[var(--muted)]">Anki saved every result.</p>
       <button class="button-soft-primary mt-8" onClick={props.onExit}>Return to dashboard</button>

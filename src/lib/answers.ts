@@ -20,6 +20,39 @@ export interface GermanArticleHeadword {
   word: string
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  auml: 'ä',
+  gt: '>',
+  lt: '<',
+  nbsp: ' ',
+  ouml: 'ö',
+  quot: '"',
+  szlig: 'ß',
+  uuml: 'ü',
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(
+    /&(#x[\da-f]+|#\d+|[a-z]+);/giu,
+    (entity, code: string) => {
+      const normalized = code.toLocaleLowerCase()
+      if (!normalized.startsWith('#')) {
+        return HTML_ENTITIES[normalized] ?? entity
+      }
+      const hexadecimal = normalized.startsWith('#x')
+      const point = Number.parseInt(
+        normalized.slice(hexadecimal ? 2 : 1),
+        hexadecimal ? 16 : 10,
+      )
+      return Number.isSafeInteger(point) && point >= 0 && point <= 0x10ffff
+        ? String.fromCodePoint(point)
+        : entity
+    },
+  )
+}
+
 export function splitGermanArticle(
   value: string,
 ): GermanArticleHeadword | null {
@@ -37,13 +70,11 @@ export function splitGermanArticle(
 }
 
 export function stripHtml(value: string): string {
-  return value
+  return decodeHtmlEntities(
+    value
     .replace(/<br\s*\/?>/giu, ' ')
     .replace(/<[^>]*>/gu, ' ')
-    .replace(/&nbsp;/giu, ' ')
-    .replace(/&amp;/giu, '&')
-    .replace(/&quot;/giu, '"')
-    .replace(/&#39;/giu, "'")
+  )
 }
 
 export function stripAudio(value: string): string {

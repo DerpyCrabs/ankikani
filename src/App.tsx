@@ -93,6 +93,7 @@ function App() {
       if (request !== connectRequest) return
       const activeProfile = health.profileName || 'Default'
       const sameProfile = profileName() === activeProfile
+      const changedLoadedProfile = Boolean(profileName()) && !sameProfile
       if (!sameProfile) {
         configureRequest += 1
       }
@@ -116,6 +117,7 @@ function App() {
         setDeckName(selected)
         setConnected(true)
       })
+      if (changedLoadedProfile) navigate('dashboard')
     } catch (error) {
       if (request !== connectRequest) return
       if (silent) return
@@ -168,7 +170,9 @@ function App() {
   }
 
   function selectDeck(name: string) {
+    if (name === deckName()) return
     setDeckName(name)
+    navigate('dashboard')
   }
 
   function navigate(nextView: View, replace = false) {
