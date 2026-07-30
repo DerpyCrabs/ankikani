@@ -316,6 +316,7 @@ function StudyRunner(props: {
         inputs?: string[]
         result: 'correct' | 'incorrect' | null
         gradeRequestId?: string
+        correctionUnlocked?: boolean
         cards?: StudyCard[]
       } | null
     } catch {
@@ -326,7 +327,10 @@ function StudyRunner(props: {
   const initialCards = restoredCards ? [] : props.cards
   const [sessionCards, setSessionCards] = createSignal<StudyCard[]>(initialCards)
   const [index, setIndex] = createSignal(
-    restored && restored.index < initialCards.length ? restored.index : 0,
+    restored &&
+      restored.index < (restoredCards?.length ?? initialCards.length)
+      ? restored.index
+      : 0,
   )
   const [phase, setPhase] = createSignal<StudyPhase>(restored?.phase ?? 'answering')
   const [inputs, setInputs] = createSignal<string[]>(
@@ -337,6 +341,9 @@ function StudyRunner(props: {
   )
   const [gradeRequestId, setGradeRequestId] = createSignal(
     restored?.gradeRequestId ?? '',
+  )
+  const [correctionUnlocked, setCorrectionUnlocked] = createSignal(
+    restored?.correctionUnlocked ?? false,
   )
   const [saving, setSaving] = createSignal(false)
   const [error, setError] = createSignal('')
@@ -372,6 +379,7 @@ function StudyRunner(props: {
           setInputs([])
           setResult(null)
           setGradeRequestId('')
+          setCorrectionUnlocked(false)
         })
       }
     } catch (caught) {
@@ -402,6 +410,7 @@ function StudyRunner(props: {
         inputs: inputs(),
         result: result(),
         gradeRequestId: gradeRequestId(),
+        correctionUnlocked: correctionUnlocked(),
         cards: sessionCards(),
       }),
     )
@@ -416,7 +425,6 @@ function StudyRunner(props: {
   async function save(
     ease: 1 | 3,
     outcome: 'correct' | 'incorrect',
-    advanceAfterSave = false,
   ) {
     const card = current()
     if (!card || saving()) return
@@ -438,10 +446,6 @@ function StudyRunner(props: {
           ...cards,
           { ...card, practiceOnly: true },
         ])
-      }
-      if (advanceAfterSave) {
-        next()
-        return
       }
       void playAudioSequence(
         card.audioFilenames?.length
@@ -468,7 +472,10 @@ function StudyRunner(props: {
         matchesAnswerPart(inputs()[partIndex] ?? '', part),
       )
       if (correct) await save(3, 'correct')
-      else setPhase('correction')
+      else {
+        setCorrectionUnlocked(false)
+        setPhase('correction')
+      }
       return
     }
     if (currentPhase === 'correction') {
@@ -479,7 +486,6 @@ function StudyRunner(props: {
       await save(
         correct ? 3 : 1,
         correct ? 'correct' : 'incorrect',
-        !correct,
       )
       return
     }
@@ -497,6 +503,7 @@ function StudyRunner(props: {
     setPhase('answering')
     setResult(null)
     setGradeRequestId('')
+    setCorrectionUnlocked(false)
     setError('')
   }
 
@@ -623,10 +630,28 @@ function StudyRunner(props: {
                               : 'border-black/15 focus:border-[var(--violet)] focus:ring-4 focus:ring-[color:var(--violet)]/15'
                           }`}
                           value={inputs()[partIndex()] ?? ''}
-                          readOnly={phase() === 'feedback'}
+                          readOnly={
+                            phase() === 'feedback' ||
+                            (phase() === 'correction' && !correctionUnlocked())
+                          }
                           autocomplete="off"
                           autocapitalize="none"
                           spellcheck={false}
+                          onKeyDown={(event) => {
+                            if (
+                              event.key !== 'Backspace' ||
+                              phase() !== 'correction' ||
+                              correctionUnlocked()
+                            ) {
+                              return
+                            }
+                            event.preventDefault()
+                            setInputs(partsFor(card()).map(() => ''))
+                            setCorrectionUnlocked(true)
+                            setGradeRequestId('')
+                            setError('')
+                            queueMicrotask(() => answerInput?.focus())
+                          }}
                           onInput={(event) =>
                             setInputs((current) => {
                               setGradeRequestId('')

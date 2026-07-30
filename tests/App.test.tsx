@@ -304,6 +304,7 @@ describe('application integration', () => {
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
       'der Ansage',
     )
+    expect((screen.getByRole('textbox') as HTMLInputElement).readOnly).toBe(true)
     const expectedAnswer = screen.getByLabelText('die Ansage')
     expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
     expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
@@ -387,7 +388,7 @@ describe('application integration', () => {
     expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
   })
 
-  it('shows old details for correction then advances after one confirmation', async () => {
+  it('shows incorrect correction feedback before advancing', async () => {
     const nextCard: StudyCard = {
       ...reviewCard,
       cardId: reviewCard.cardId + 1,
@@ -417,6 +418,11 @@ describe('application integration', () => {
       1,
       expect.any(String),
     )
+    await screen.findByRole('button', { name: 'Continue' })
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('var(--coral-soft)')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await screen.findByRole('heading', { name: nextCard.prompt })
   })
 
@@ -438,7 +444,13 @@ describe('application integration', () => {
     fireEvent.input(input, { target: { value: 'wrong' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     await screen.findByRole('button', { name: 'Check correction' })
+    expect(input.readOnly).toBe(true)
+    fireEvent.keyDown(input, { key: 'j' })
+    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled()
 
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(input.readOnly).toBe(false)
+    expect(input.value).toBe('')
     fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
     fireEvent.click(screen.getByRole('button', { name: 'Check correction' }))
 
