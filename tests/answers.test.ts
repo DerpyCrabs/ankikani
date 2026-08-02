@@ -164,13 +164,13 @@ describe('typed answer state machine', () => {
 
   it('grades a correct retype as Good', () => {
     expect(
-      submissionDecision('correction', 'announcement', ['announcement'], 'english'),
+      submissionDecision('retrying', 'announcement', ['announcement'], 'english'),
     ).toEqual({ action: 'grade', ease: 3, outcome: 'correct' })
   })
 
-  it('grades a second wrong submission as Again', () => {
+  it('reveals correction again after another wrong submission', () => {
     expect(
-      submissionDecision('correction', 'wrong', ['announcement'], 'english'),
-    ).toEqual({ action: 'grade', ease: 1, outcome: 'incorrect' })
+      submissionDecision('retrying', 'wrong', ['announcement'], 'english'),
+    ).toEqual({ action: 'show-correction' })
   })
 })

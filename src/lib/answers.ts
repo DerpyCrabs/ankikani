@@ -5,7 +5,7 @@ import type {
 } from './domain'
 
 export type AnswerLanguage = 'german' | 'english'
-export type AnswerAttemptPhase = 'answering' | 'correction'
+export type AnswerAttemptPhase = 'answering' | 'retrying'
 
 const ARTICLE_ALTERNATIVE =
   /^(der|die|das|ein|eine)\/(der|die|das|ein|eine)\s+(.+)$/iu
@@ -313,10 +313,12 @@ export function submissionDecision(
   | { action: 'show-correction' }
   | { action: 'grade'; ease: 1 | 3; outcome: 'correct' | 'incorrect' } {
   const correct = matchesAnyAnswer(input, acceptedAnswers, language)
-  if (phase === 'answering' && !correct) return { action: 'show-correction' }
+  if ((phase === 'answering' || phase === 'retrying') && !correct) {
+    return { action: 'show-correction' }
+  }
   return {
     action: 'grade',
-    ease: correct ? 3 : 1,
-    outcome: correct ? 'correct' : 'incorrect',
+    ease: 3,
+    outcome: 'correct',
   }
 }

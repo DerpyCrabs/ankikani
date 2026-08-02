@@ -503,22 +503,34 @@ describe('application integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     await screen.findByRole('button', { name: 'Continue' })
     expect(input.readOnly).toBe(true)
-    fireEvent.keyDown(input, { key: 'j' })
+    fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
     expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalled()
 
     fireEvent.keyDown(input, { key: 'Backspace' })
     expect(input.readOnly).toBe(false)
     expect(input.value).toBe('')
-    fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
+    expect(screen.queryByText(reviewCard.sourceExample)).toBeNull()
     expect(
       screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
-    ).toContain('var(--mint-soft)')
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    ).toContain('white')
+    fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
+    expect(mocks.answer).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('white')
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     expect(mocks.answer).toHaveBeenCalledWith(
       reviewCard.cardId,
       3,
       expect.any(String),
     )
+    expect(screen.getByRole('heading', { name: reviewCard.prompt })).toBeTruthy()
+    await waitFor(() => {
+      expect(
+        screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+      ).toContain('var(--mint-soft)')
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await screen.findByRole('heading', { name: nextCard.prompt })
   })
 
@@ -539,16 +551,24 @@ describe('application integration', () => {
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
-    const continueButton = await screen.findByRole('button', { name: 'Continue' })
+    await screen.findByRole('button', { name: 'Continue' })
 
     fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(screen.queryByText(reviewCard.sourceExample)).toBeNull()
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('white')
     fireEvent.input(input, { target: { value: 'still wrong' } })
-
-    expect((continueButton as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.submit(input.closest('form')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     expect(mocks.answer).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { name: reviewCard.prompt })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: nextCard.prompt })).toBeNull()
+    expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
+    expect(input.readOnly).toBe(true)
+    expect(
+      screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
+    ).toContain('var(--coral-soft)')
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
   })
 
   it('replays only answer audio after correction details are shown', async () => {
@@ -568,10 +588,127 @@ describe('application integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     await screen.findByRole('button', { name: 'Continue' })
 
-    fireEvent.keyDown(input, { key: 'j' })
+    fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
     expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }))
     expect(window.HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1)
+  })
+
+  it('replays prompt audio from correction details when answer audio is absent', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [{
+        ...reviewCard,
+        audioFilename: undefined,
+        audioFilenames: [],
+        promptAudioFilename: 'prompt.mp3',
+        promptAudioFilenames: ['prompt.mp3'],
+      }],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    await screen.findByRole('button', { name: 'Continue' })
+
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    play.mockClear()
+    fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
+    expect(play).toHaveBeenCalledOnce()
+  })
+
+  it('uses Ctrl+J for audio while the answer input is editable', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [{
+        ...reviewCard,
+        promptAudioFilename: 'prompt.mp3',
+        promptAudioFilenames: ['prompt.mp3'],
+      }],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    const shortcuts = screen.getByLabelText('Keyboard shortcuts')
+    expect(shortcuts.textContent).toContain('Ctrl+J')
+
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    play.mockClear()
+    fireEvent.keyDown(input, { key: 'j' })
+    expect(play).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
+    expect(play).toHaveBeenCalledOnce()
+  })
+
+  it('renders array-only prompt audio and exposes its shortcut', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [{
+        ...reviewCard,
+        audioFilename: null,
+        audioFilenames: [],
+        promptAudioFilename: null,
+        promptAudioFilenames: ['prompt.mp3'],
+      }],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    expect(await screen.findByRole('button', { name: 'Play prompt' })).toBeTruthy()
+    expect(screen.getByLabelText('Keyboard shortcuts').textContent).toContain(
+      'Ctrl+J Replay audio',
+    )
+  })
+
+  it('does not advertise audio shortcuts on cards without audio', async () => {
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [{
+        ...reviewCard,
+        audioFilename: null,
+        audioFilenames: [],
+        promptAudioFilename: null,
+        promptAudioFilenames: [],
+      }],
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    await screen.findByRole('textbox')
+    expect(screen.getByLabelText('Keyboard shortcuts').textContent).not.toContain(
+      'Replay audio',
+    )
+  })
+
+  it('skips a card when Anki reports that its grade is stale', async () => {
+    const nextCard = {
+      ...reviewCard,
+      cardId: reviewCard.cardId + 1,
+      noteId: reviewCard.noteId + 1,
+      prompt: 'connection',
+    }
+    mocks.reviews.mockResolvedValue({
+      deckName: 'German',
+      cards: [reviewCard, nextCard],
+    })
+    mocks.answer.mockResolvedValue({
+      saved: false,
+      stale: true,
+      cardId: reviewCard.cardId,
+      ease: 3,
+    })
+
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const input = await screen.findByRole('textbox')
+    fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+
+    await screen.findByRole('heading', { name: nextCard.prompt })
+    expect(screen.queryByText(reviewCard.sourceExample)).toBeNull()
   })
 
   it('ignores malformed saved review state', async () => {
@@ -722,12 +859,12 @@ describe('application integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     await screen.findByRole('button', { name: 'Continue' })
-    expect(screen.getByLabelText('Keyboard shortcuts').textContent).toContain('J')
+    expect(screen.getByLabelText('Keyboard shortcuts').textContent).toContain('Ctrl+J')
     const play = vi.mocked(window.HTMLMediaElement.prototype.play)
     play.mockClear()
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'r' })
     expect(play).not.toHaveBeenCalled()
-    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'j' })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'j', ctrlKey: true })
     expect(play).toHaveBeenCalledOnce()
   })
 })

@@ -1,18 +1,31 @@
 import Check from 'lucide-solid/icons/check'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
-import Headphones from 'lucide-solid/icons/headphones'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import Sparkles from 'lucide-solid/icons/sparkles'
-import Volume2 from 'lucide-solid/icons/volume-2'
 import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { matchesAnswerPart, splitGermanArticle, type GermanGenderArticle } from '../lib/answers'
 import { api } from '../lib/api'
 import { loadCards } from '../lib/cards'
 import { sessionStorageKey } from '../lib/storage'
 import type { AnswerLanguage, AnswerPart, LessonItem, StudyCard, StudyConfig } from '../lib/domain'
+import { AudioButton, AudioShortcut, playAudioSequence, stopAudioPlayback } from './StudyAudio'
 
-type StudyPhase = 'answering' | 'correction' | 'feedback'
+type StudyPhase = 'answering' | 'correction' | 'retrying' | 'feedback'
+
+function promptAudioFiles(card: StudyCard) {
+  return card.promptAudioFilenames?.length
+    ? card.promptAudioFilenames
+    : [card.promptAudioFilename].filter(
+        (value): value is string => Boolean(value),
+      )
+}
+
+function answerAudioFiles(card: StudyCard) {
+  return card.audioFilenames?.length
+    ? card.audioFilenames
+    : [card.audioFilename].filter((value): value is string => Boolean(value))
+}
 
 interface StoredStudySession {
   index: number
@@ -33,7 +46,9 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
     if (
       !Number.isInteger(candidate.index) ||
       (candidate.index ?? -1) < 0 ||
-      !['answering', 'correction', 'feedback'].includes(candidate.phase ?? '') ||
+      !['answering', 'correction', 'retrying', 'feedback'].includes(
+        candidate.phase ?? '',
+      ) ||
       !['correct', 'incorrect', null].includes(candidate.result ?? null) ||
       (candidate.inputs !== undefined &&
         (
@@ -274,6 +289,14 @@ function LessonTeaching(props: {
     })
   })
   const card = () => props.item.cards[0]
+  const audioFiles = () =>
+    props.item.promptAudioFilenames?.length
+      ? props.item.promptAudioFilenames
+      : props.item.audioFilenames?.length
+        ? props.item.audioFilenames
+        : [props.item.promptAudioFilename ?? props.item.audioFilename].filter(
+            (value): value is string => Boolean(value),
+          )
   const visibleDetails = () =>
     (props.item.details ?? []).filter((detail) =>
       ![
@@ -288,7 +311,9 @@ function LessonTeaching(props: {
     <StudyShell
       progress={props.index + 1}
       total={props.total}
+      audioAvailable={audioFiles().length > 0}
     >
+      <AudioShortcut filenames={audioFiles()} />
       <article class="mx-auto w-full max-w-3xl">
         <div class="mb-8 flex flex-wrap items-center justify-between gap-3">
           <span class="rounded-full bg-[var(--yellow)] px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
@@ -296,16 +321,8 @@ function LessonTeaching(props: {
           </span>
           <div class="flex flex-wrap items-center justify-end gap-3">
             <AudioButton
-              filenames={
-                props.item.promptAudioFilenames?.length
-                  ? props.item.promptAudioFilenames
-                  : props.item.audioFilenames?.length
-                    ? props.item.audioFilenames
-                    : [props.item.promptAudioFilename ?? props.item.audioFilename]
-                        .filter((value): value is string => Boolean(value))
-              }
+              filenames={audioFiles()}
               autoplay={props.item.contentKind === 'audio'}
-              hotkey
             />
             <button class="button-soft-primary" onClick={nextLesson}>
               {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
@@ -389,7 +406,11 @@ function StudyRunner(props: {
       ? restored.index
       : 0,
   )
-  const [phase, setPhase] = createSignal<StudyPhase>(restored?.phase ?? 'answering')
+  const [phase, setPhase] = createSignal<StudyPhase>(
+    restored?.phase === 'correction' && restored.correctionUnlocked
+      ? 'retrying'
+      : restored?.phase ?? 'answering',
+  )
   const [inputs, setInputs] = createSignal<string[]>(
     restored?.inputs ?? [restored?.input ?? ''],
   )
@@ -399,9 +420,6 @@ function StudyRunner(props: {
   const [gradeRequestId, setGradeRequestId] = createSignal(
     restored?.gradeRequestId ?? '',
   )
-  const [correctionUnlocked, setCorrectionUnlocked] = createSignal(
-    restored?.correctionUnlocked ?? false,
-  )
   const [saving, setSaving] = createSignal(false)
   const [error, setError] = createSignal('')
   const [restoring, setRestoring] = createSignal(Boolean(restoredCards))
@@ -409,20 +427,22 @@ function StudyRunner(props: {
   let answerInput: HTMLInputElement | undefined
   const current = createMemo(() => sessionCards()[index()])
   const progress = createMemo(() => index() + 1)
-  const correctionIsCorrect = createMemo(() => {
+  const promptAudio = createMemo(() => {
     const card = current()
-    if (
-      !card ||
-      phase() !== 'correction' ||
-      !correctionUnlocked()
-    ) {
-      return false
-    }
-    return partsFor(card).every((part, partIndex) =>
-      matchesAnswerPart(inputs()[partIndex] ?? '', part),
-    )
+    return card ? promptAudioFiles(card) : []
   })
-
+  const answerAudio = createMemo(() => {
+    const card = current()
+    return card ? answerAudioFiles(card) : []
+  })
+  const shortcutAudio = createMemo(() => {
+    const revealed = phase() === 'correction' || phase() === 'feedback'
+    return revealed && answerAudio().length ? answerAudio() : promptAudio()
+  })
+  const shortcutFallbackAudio = createMemo(() => {
+    const revealed = phase() === 'correction' || phase() === 'feedback'
+    return revealed && answerAudio().length ? promptAudio() : []
+  })
   async function restoreCards() {
     if (!restoredCards) return
     setRestoring(true)
@@ -454,7 +474,6 @@ function StudyRunner(props: {
           setInputs([])
           setResult(null)
           setGradeRequestId('')
-          setCorrectionUnlocked(false)
         })
       }
     } catch (caught) {
@@ -486,7 +505,6 @@ function StudyRunner(props: {
         inputs: inputs(),
         result: result(),
         gradeRequestId: gradeRequestId(),
-        correctionUnlocked: correctionUnlocked(),
         cards: sessionCards(),
       }),
     )
@@ -514,7 +532,11 @@ function StudyRunner(props: {
           globalThis.crypto?.randomUUID?.() ||
           `${Date.now()}-${Math.random()}`
         setGradeRequestId(requestId)
-        await api.answer(card.cardId, ease, requestId)
+        const response = await api.answer(card.cardId, ease, requestId)
+        if (!response.saved) {
+          if (response.stale) return 'stale' as const
+          throw new Error('Anki rejected the card grade.')
+        }
       }
       if (props.mode === 'lesson' && outcome === 'incorrect') {
         setSessionCards((cards) => [
@@ -525,15 +547,9 @@ function StudyRunner(props: {
       if (showFeedback) {
         setResult(outcome)
         setPhase('feedback')
-        void playAudioSequence(
-          card.audioFilenames?.length
-            ? card.audioFilenames
-            : [card.audioFilename].filter(
-                (value): value is string => Boolean(value),
-              ),
-        )
+        void playAudioSequence(answerAudioFiles(card), promptAudioFiles(card))
       }
-      return true
+      return 'saved' as const
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Grade was not saved.')
       return false
@@ -547,30 +563,23 @@ function StudyRunner(props: {
     const card = current()
     if (!card || saving()) return
     const currentPhase = phase()
-    if (currentPhase === 'answering') {
+    if (currentPhase === 'answering' || currentPhase === 'retrying') {
       const parts = partsFor(card)
       const correct = parts.every((part, partIndex) =>
         matchesAnswerPart(inputs()[partIndex] ?? '', part),
       )
-      if (correct) await save(3, 'correct')
+      if (correct) {
+        const saved = await save(3, 'correct')
+        if (saved === 'stale') next()
+      }
       else {
-        setCorrectionUnlocked(false)
         setPhase('correction')
       }
       return
     }
     if (currentPhase === 'correction') {
-      const parts = partsFor(card)
-      const correct = parts.every((part, partIndex) =>
-        matchesAnswerPart(inputs()[partIndex] ?? '', part),
-      )
-      if (correctionUnlocked() && !correct) return
-      const saved = await save(
-        correct ? 3 : 1,
-        correct ? 'correct' : 'incorrect',
-        false,
-      )
-      if (saved) next()
+      const saved = await save(1, 'incorrect', false)
+      if (saved === 'saved' || saved === 'stale') next()
       return
     }
     next()
@@ -589,7 +598,6 @@ function StudyRunner(props: {
       setPhase('answering')
       setResult(null)
       setGradeRequestId('')
-      setCorrectionUnlocked(false)
       setError('')
     })
   }
@@ -621,17 +629,16 @@ function StudyRunner(props: {
           progress={progress()}
           total={sessionCards().length}
           showCount
+          audioAvailable={shortcutAudio().length > 0}
           announcement={
             error()
               ? `Connection interrupted. Answer preserved. ${error()}`
               : saving()
                 ? 'Saving answer to Anki.'
                 : phase() === 'correction'
-                  ? correctionIsCorrect()
-                    ? 'Correction accepted. Continue when ready.'
-                    : correctionUnlocked()
-                      ? 'Correction is still incorrect.'
-                      : 'Answer details are shown. Backspace to correct it, or continue.'
+                  ? 'Answer details are shown. Backspace to correct it, or continue.'
+                  : phase() === 'retrying'
+                    ? 'Retype the answer, then submit it.'
                   : phase() === 'feedback'
                     ? result() === 'correct'
                       ? 'Answer accepted.'
@@ -639,13 +646,15 @@ function StudyRunner(props: {
                     : `Card ${progress()} of ${sessionCards().length}.`
           }
         >
+          <AudioShortcut
+            filenames={shortcutAudio()}
+            fallbackFilenames={shortcutFallbackAudio()}
+          />
           <article class="mx-auto w-full max-w-xl">
             <div
               class={`card-shell p-6 transition-colors sm:p-8 ${
                 phase() === 'correction'
-                  ? correctionIsCorrect()
-                    ? 'bg-[var(--mint-soft)]'
-                    : 'bg-[var(--coral-soft)]'
+                  ? 'bg-[var(--coral-soft)]'
                   : phase() === 'feedback'
                     ? result() === 'correct'
                       ? 'bg-[var(--mint-soft)]'
@@ -655,9 +664,7 @@ function StudyRunner(props: {
               style={{
                 'background-color':
                   phase() === 'correction'
-                    ? correctionIsCorrect()
-                      ? 'var(--mint-soft)'
-                      : 'var(--coral-soft)'
+                    ? 'var(--coral-soft)'
                     : phase() === 'feedback'
                       ? result() === 'correct'
                         ? 'var(--mint-soft)'
@@ -665,19 +672,12 @@ function StudyRunner(props: {
                       : 'white',
               }}
             >
-              <Show when={card().promptAudioFilename}>
+              <Show when={promptAudio().length}>
                 <div class="mb-5 flex justify-center">
                   <AudioButton
-                    filenames={
-                      card().promptAudioFilenames?.length
-                        ? (card().promptAudioFilenames ?? [])
-                        : [card().promptAudioFilename].filter(
-                            (value): value is string => Boolean(value),
-                          )
-                    }
+                    filenames={promptAudio()}
                     label="Play prompt"
                     autoplay={card().contentKind === 'audio'}
-                    hotkey={phase() === 'answering'}
                   />
                 </div>
               </Show>
@@ -718,9 +718,7 @@ function StudyRunner(props: {
                           aria-label={part.label}
                           class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
                             phase() === 'correction'
-                              ? correctionIsCorrect()
-                                ? 'border-[var(--mint)] focus:ring-4 focus:ring-[color:var(--mint)]/15'
-                                : 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
+                              ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
                               : phase() === 'feedback'
                                 ? result() === 'correct'
                                   ? 'border-[var(--mint)]'
@@ -731,7 +729,7 @@ function StudyRunner(props: {
                           readOnly={
                             saving() ||
                             phase() === 'feedback' ||
-                            (phase() === 'correction' && !correctionUnlocked())
+                            phase() === 'correction'
                           }
                           autocomplete="off"
                           autocapitalize="none"
@@ -739,14 +737,13 @@ function StudyRunner(props: {
                           onKeyDown={(event) => {
                             if (
                               event.key !== 'Backspace' ||
-                              phase() !== 'correction' ||
-                              correctionUnlocked()
+                              phase() !== 'correction'
                             ) {
                               return
                             }
                             event.preventDefault()
                             setInputs(partsFor(card()).map(() => ''))
-                            setCorrectionUnlocked(true)
+                            setPhase('retrying')
                             setGradeRequestId('')
                             setError('')
                             queueMicrotask(() => answerInput?.focus())
@@ -767,7 +764,7 @@ function StudyRunner(props: {
                 </div>
 
                 <Show when={phase() === 'correction' || phase() === 'feedback'}>
-                  <Feedback card={card()} />
+                  <Feedback card={card()} promptAudio={promptAudio()} />
                 </Show>
 
                 <Show when={error()}>
@@ -779,14 +776,7 @@ function StudyRunner(props: {
                 <div class="mx-auto mt-5 max-w-sm">
                 <button
                   class="button-soft-primary w-full"
-                  disabled={
-                    saving() ||
-                    (
-                      phase() === 'correction' &&
-                      correctionUnlocked() &&
-                      !correctionIsCorrect()
-                    )
-                  }
+                  disabled={saving()}
                 >
                   <Show when={saving()} fallback={phase() === 'feedback' || phase() === 'correction' ? 'Continue' : 'Check answer'}>
                     <LoaderCircle class="size-4 animate-spin" />
@@ -807,6 +797,7 @@ function StudyRunner(props: {
 
 function Feedback(props: {
   card: StudyCard
+  promptAudio: string[]
 }) {
   return (
     <div class="mt-6 border-t border-black/10 pt-6">
@@ -820,14 +811,8 @@ function Feedback(props: {
           </p>
         </div>
         <AudioButton
-          filenames={
-            props.card.audioFilenames?.length
-              ? props.card.audioFilenames
-              : [props.card.audioFilename].filter(
-                  (value): value is string => Boolean(value),
-                )
-          }
-          hotkey
+          filenames={answerAudioFiles(props.card)}
+          fallbackFilenames={props.promptAudio}
         />
       </div>
       <div class="mt-5 grid gap-3 sm:grid-cols-2">
@@ -933,96 +918,11 @@ function NoteContent(props: { value: string }) {
   )
 }
 
-let audioGeneration = 0
-let stopActiveAudio: (() => void) | null = null
-
-function stopAudioPlayback() {
-  audioGeneration += 1
-  stopActiveAudio?.()
-  stopActiveAudio = null
-}
-
-async function playAudioSequence(filenames: string[]) {
-  stopAudioPlayback()
-  const generation = audioGeneration
-  for (const filename of filenames) {
-    if (generation !== audioGeneration) return
-    await new Promise<void>((resolve) => {
-      const audio = new Audio(api.mediaUrl(filename))
-      let finished = false
-      const finish = () => {
-        if (finished) return
-        finished = true
-        if (stopActiveAudio === cancel) stopActiveAudio = null
-        resolve()
-      }
-      const cancel = () => {
-        audio.pause()
-        finish()
-      }
-      stopActiveAudio = cancel
-      audio.addEventListener('ended', finish, { once: true })
-      audio.addEventListener('error', finish, { once: true })
-      void audio.play().catch(finish)
-    })
-  }
-}
-
-function AudioButton(props: {
-  filenames: string[]
-  label?: string
-  autoplay?: boolean
-  hotkey?: boolean
-}) {
-  const [playing, setPlaying] = createSignal(false)
-  let autoplayKey = ''
-
-  async function play() {
-    if (!props.filenames.length || playing()) return
-    setPlaying(true)
-    await playAudioSequence(props.filenames)
-    setPlaying(false)
-  }
-
-  createEffect(() => {
-    const key = props.autoplay ? props.filenames.join('|') : ''
-    if (!key || key === autoplayKey) return
-    autoplayKey = key
-    queueMicrotask(() => void play())
-  })
-
-  onMount(() => {
-    const replay = (event: KeyboardEvent) => {
-      if (!props.hotkey) return
-      const target = event.target as HTMLElement | null
-      const editing =
-        target instanceof HTMLInputElement
-          ? !target.readOnly
-          : ['TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')
-      if (event.key.toLocaleLowerCase() !== 'j' || editing) return
-      event.preventDefault()
-      void play()
-    }
-    window.addEventListener('keydown', replay)
-    onCleanup(() => window.removeEventListener('keydown', replay))
-  })
-
-  return (
-    <Show when={props.filenames.length}>
-      <div class="flex items-center gap-2">
-        <button class="button-quiet" type="button" onClick={() => void play()}>
-          {playing() ? <Headphones class="size-4 animate-pulse" /> : <Volume2 class="size-4" />}
-          {props.label ?? 'Replay audio'}
-        </button>
-      </div>
-    </Show>
-  )
-}
-
 function StudyShell(props: {
   progress: number
   total: number
   showCount?: boolean
+  audioAvailable?: boolean
   announcement?: string
   children: unknown
 }) {
@@ -1061,7 +961,11 @@ function StudyShell(props: {
         aria-label="Keyboard shortcuts"
       >
         <span><kbd>Enter</kbd> Submit / continue</span>
-        <span><kbd>J</kbd> Replay audio</span>
+        <Show when={props.audioAvailable}>
+          <span>
+            <kbd>Ctrl</kbd>+<kbd>J</kbd> Replay audio
+          </span>
+        </Show>
       </div>
     </section>
   )
