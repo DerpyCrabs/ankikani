@@ -1,3 +1,4 @@
+import { refreshReviewScores, rwkvAvailable } from './rwkv/refresh'
 import { Database } from 'bun:sqlite'
 import path from 'node:path'
 import { mkdirSync, copyFileSync, existsSync } from 'node:fs'
@@ -16,6 +17,7 @@ mkdirSync(DATA_DIR, { recursive: true })
 let database: Database | null = null
 
 export const DEFAULT_SETTINGS: SchedulingSettings = {
+  neuralReviewOrder: true,
   newPerDay: 20,
   reviewsPerDay: 200,
   desiredRetention: 0.9,
@@ -58,6 +60,9 @@ export function createSchema(target: Database) {
     );
     CREATE INDEX IF NOT EXISTS cards_deck_due ON cards(deck_name, queue, due_at);
     CREATE INDEX IF NOT EXISTS cards_note ON cards(note_id);
+    CREATE TABLE IF NOT EXISTS instant_scores (
+      card_id INTEGER PRIMARY KEY, review_id INTEGER, day TEXT, recall REAL
+    );
     CREATE TABLE IF NOT EXISTS revlog (
       id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, ease INTEGER NOT NULL,
       interval INTEGER NOT NULL DEFAULT 0, last_interval INTEGER NOT NULL DEFAULT 0,
@@ -120,9 +125,9 @@ function ankiCard(row: CardRow): AnkiCardInfo {
   }
 }
 
-function rowsForDeck(deckName: string, suffix = '', params: unknown[] = []) {
+function rowsForDeck(deckName: string, suffix = '', params: unknown[] = [], store = db()) {
   const prefix = `${deckName}::%`
-  return db().query(`SELECT c.*, n.model_name, n.fields_json FROM cards c JOIN notes n ON n.id=c.note_id
+  return store.query(`SELECT c.*, n.model_name, n.fields_json FROM cards c JOIN notes n ON n.id=c.note_id
     WHERE (c.deck_name=? OR c.deck_name LIKE ?) ${suffix}`).all(...([deckName, prefix, ...params] as never[])) as CardRow[]
 }
 
@@ -135,7 +140,7 @@ function mapped(deckName: string, config: StudyConfig, rows = rowsForDeck(deckNa
 
 export function getOwnedSettings(deckName: string): SchedulingSettings {
   const row = db().query('SELECT value_json FROM settings WHERE deck_name=?').get(deckName) as { value_json: string } | null
-  return row ? { ...DEFAULT_SETTINGS, ...JSON.parse(row.value_json) } : DEFAULT_SETTINGS
+  return { ...DEFAULT_SETTINGS, ...(row && JSON.parse(row.value_json)), rwkvAvailable: rwkvAvailable(DB_PATH) }
 }
 
 export function updateOwnedSettings(deckName: string, value: SchedulingSettings) {
@@ -146,8 +151,10 @@ export function updateOwnedSettings(deckName: string, value: SchedulingSettings)
   const validStep = (item: string) => /^\d+(?:\.\d+)?[mhd]$/.test(item)
   if (!value.learningSteps.length || !value.relearningSteps.length || !value.learningSteps.every(validStep) || !value.relearningSteps.every(validStep)) throw new Error('Steps must contain values such as 1m, 10m, 1h, or 1d.')
   if (value.fsrsWeights && (!value.fsrsWeights.length || value.fsrsWeights.some((item) => !Number.isFinite(item)))) throw new Error('FSRS weights must be finite numbers.')
-  db().query('INSERT INTO settings VALUES(?,?) ON CONFLICT(deck_name) DO UPDATE SET value_json=excluded.value_json').run(deckName, JSON.stringify(value))
-  return value
+  if (value.neuralReviewOrder !== undefined && typeof value.neuralReviewOrder !== 'boolean') throw new Error('Invalid review order.')
+  const { rwkvAvailable: _available, ...stored } = value
+  db().query('INSERT INTO settings VALUES(?,?) ON CONFLICT(deck_name) DO UPDATE SET value_json=excluded.value_json').run(deckName, JSON.stringify(stored))
+  return getOwnedSettings(deckName)
 }
 
 export function ownedHealth() {
@@ -159,12 +166,21 @@ export function listOwnedDecks(): DeckSummary[] {
   return (db().query('SELECT id, name FROM decks ORDER BY name').all() as Array<{id:number;name:string}>).map((deck) => {
     const names = db().query(`SELECT DISTINCT n.model_name name FROM cards c JOIN notes n ON n.id=c.note_id
       WHERE c.deck_name=? OR c.deck_name LIKE ?`).all(deck.name, `${deck.name}::%`) as Array<{name:string}>
-    return { id: deck.id, name: deck.name, supported: names.length > 0, modelNames: names.map((item) => item.name) }
+    const config = names.length ? getOwnedDeckProfile(deck.name).suggestedConfig : null
+    let supported = false
+    if (config?.models.some(model => model.enabled)) {
+      const rows = db().query<CardRow, [string,string]>(`SELECT c.*, n.model_name, n.fields_json
+        FROM cards c JOIN notes n ON n.id=c.note_id WHERE c.deck_name=? OR c.deck_name LIKE ?`)
+      for (const row of rows.iterate(deck.name, `${deck.name}::%`)) {
+        if (adaptCard(ankiCard(row),config)) { supported = true; break }
+      }
+    }
+    return { id: deck.id, name: deck.name, supported, modelNames: names.map((item) => item.name) }
   })
 }
 
-export function getOwnedDeckProfile(deckName: string): DeckProfile {
-  const models = db().query(`SELECT DISTINCT m.* FROM models m JOIN notes n ON n.model_name=m.name
+export function getOwnedDeckProfile(deckName: string, store = db()): DeckProfile {
+  const models = store.query(`SELECT DISTINCT m.* FROM models m JOIN notes n ON n.model_name=m.name
     JOIN cards c ON c.note_id=n.id WHERE c.deck_name=? OR c.deck_name LIKE ?`).all(deckName, `${deckName}::%`) as Array<{name:string;fields_json:string;templates_json:string}>
   const fieldsByModel: Record<string,string[]> = {}
   const templatesByModel: DeckProfile['templatesByModel'] = {}
@@ -172,26 +188,47 @@ export function getOwnedDeckProfile(deckName: string): DeckProfile {
   for (const model of models) {
     fieldsByModel[model.name] = JSON.parse(model.fields_json)
     templatesByModel[model.name] = JSON.parse(model.templates_json)
-    samplesByModel[model.name] = rowsForDeck(deckName, 'AND n.model_name=? LIMIT 3', [model.name]).map(ankiCard)
+    samplesByModel[model.name] = rowsForDeck(deckName, 'AND n.model_name=? LIMIT 3', [model.name], store).map(ankiCard)
   }
   const detected = buildDeckConfig(deckName, models.map((model) => ({
     modelName: model.name, fields: fieldsByModel[model.name], templates: templatesByModel[model.name],
     templateCount: Object.keys(templatesByModel[model.name]).length, samples: samplesByModel[model.name],
-    noteCount: Number((db().query(`SELECT COUNT(DISTINCT n.id) count FROM notes n JOIN cards c ON c.note_id=n.id
+    noteCount: Number((store.query(`SELECT COUNT(DISTINCT n.id) count FROM notes n JOIN cards c ON c.note_id=n.id
       WHERE n.model_name=? AND (c.deck_name=? OR c.deck_name LIKE ?)`).get(model.name,deckName,`${deckName}::%`) as {count:number}).count),
   })))
   return { deckName, modelNames: models.map((model) => model.name), fieldsByModel, templatesByModel,
     samplesByModel, suggestedMapping: null, suggestedConfig: detected.config, compatibility: detected.compatibility }
 }
 
-function dueRows(deckName: string, kind: 'review' | 'learning' | 'new', limit: number) {
+export function countImportableCards(store: Database) {
+  let count = 0
+  const decks = store.query<{deck_name: string}, []>('SELECT DISTINCT deck_name FROM cards').all()
+  const cards = store.query<CardRow, [string]>(`SELECT c.*, n.model_name, n.fields_json FROM cards c
+    JOIN notes n ON n.id=c.note_id WHERE c.deck_name=?`)
+  for (const {deck_name} of decks) {
+    const config = getOwnedDeckProfile(deck_name, store).suggestedConfig
+    if (config) for (const row of cards.iterate(deck_name)) {
+      if (adaptCard(ankiCard(row), config)) count++
+    }
+  }
+  return count
+}
+
+function dueRows(deckName: string, kind: 'review' | 'learning' | 'new', limit: number, ranked = false) {
   const now = Date.now()
   const clause = (kind === 'new' ? 'c.queue=0' : kind === 'learning'
     ? 'c.queue IN (1,3) AND c.due_at<=?' : 'c.queue=2 AND c.due_at<=?'
     ) + ' AND (c.buried_until IS NULL OR c.buried_until<=unixepoch()*1000)'
   const args = kind === 'new' ? [deckName, `${deckName}::%`, limit] : [deckName, `${deckName}::%`, now, limit]
-  return db().query(`SELECT c.*, n.model_name, n.fields_json FROM cards c JOIN notes n ON n.id=c.note_id
-    WHERE (c.deck_name=? OR c.deck_name LIKE ?) AND ${clause} ORDER BY c.due_at,c.id LIMIT ?`).all(...args) as CardRow[]
+  const review = kind === 'review' && ranked
+  const scores = review ? `LEFT JOIN instant_scores s ON s.card_id=c.id AND s.day=?
+    AND s.review_id=(SELECT MAX(id) FROM revlog WHERE card_id=c.id AND ease BETWEEN 1 AND 4)` : ''
+  const order = review ? 's.recall IS NULL, s.recall,' : ''
+  if (review) args.unshift(dayKey(new Date(now)))
+  return db().query(`SELECT c.*, n.model_name, n.fields_json ${review ? ', s.recall AS instant_recall' : ''}
+    FROM cards c JOIN notes n ON n.id=c.note_id ${scores}
+    WHERE (c.deck_name=? OR c.deck_name LIKE ?) AND ${clause}
+    ORDER BY ${order} c.due_at,c.id LIMIT ?`).all(...args) as (CardRow & {instant_recall?: number | null})[]
 }
 
 const dayKey = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
@@ -206,7 +243,7 @@ function remainingLimits(deckName:string) {
   }
 }
 
-function oneSiblingPerNote(rows:CardRow[], bury:boolean) {
+function oneSiblingPerNote<T extends CardRow>(rows:T[], bury:boolean) {
   if (!bury) return rows
   const seen = new Set<number>()
   return rows.filter((row) => seen.has(row.note_id) ? false : (seen.add(row.note_id),true))
@@ -214,18 +251,21 @@ function oneSiblingPerNote(rows:CardRow[], bury:boolean) {
 
 export function getOwnedReviewSession(deckName: string, config: StudyConfig): SessionPayload {
   const settings = getOwnedSettings(deckName)
+  const ranked = Boolean(settings.neuralReviewOrder && settings.rwkvAvailable)
+  if (ranked) refreshReviewScores(DB_PATH)
   const reviewLimit = remainingLimits(deckName).reviews
   let reviews = 0
   const rows = oneSiblingPerNote([
     ...dueRows(deckName, 'learning', 10000),
-    ...dueRows(deckName, 'review', Math.max(reviewLimit*4,reviewLimit)),
+    ...dueRows(deckName, 'review', Math.max(reviewLimit*4,reviewLimit), ranked),
   ],settings.burySiblings).filter((row) => row.queue!==2 || ++reviews<=reviewLimit)
-  return { deckName, cards: buildStudyQueue(mapped(deckName, config, rows)) }
+  const recall = new Map(rows.flatMap(row => row.instant_recall == null ? [] : [[row.id, row.instant_recall] as const]))
+  return { deckName, cards: buildStudyQueue(mapped(deckName, config, rows), recall) }
 }
 
 export function getOwnedLessonSession(deckName: string, config: StudyConfig): LessonPayload {
   const remaining = remainingLimits(deckName).newCards
-  const candidates = mapped(deckName, config, dueRows(deckName, 'new', Math.max(remaining * 4, remaining)))
+  const candidates = mapped(deckName, config, dueRows(deckName, 'new', remaining > 0 ? -1 : 0))
   const groups = new Map<number,StudyCard[]>()
   for (const card of candidates) groups.set(card.noteId, [...(groups.get(card.noteId) ?? []), card])
   const selected:StudyCard[][] = []
@@ -261,7 +301,7 @@ export function getOwnedDashboard(deckName: string, config: StudyConfig): Dashbo
   let reviewCount = 0
   const due = oneSiblingPerNote([
     ...dueRows(deckName,'learning',10000),
-    ...dueRows(deckName,'review',Math.max(limits.reviews*4,limits.reviews)),
+    ...dueRows(deckName,'review',Math.max(limits.reviews*4,limits.reviews), Boolean(settings.neuralReviewOrder && settings.rwkvAvailable)),
   ],settings.burySiblings).filter((row)=>row.queue!==2 || ++reviewCount<=limits.reviews)
   const learningDue = due.filter((row)=>row.queue!==2)
   const reviewDue = due.filter((row)=>row.queue===2)
@@ -278,7 +318,19 @@ export function getOwnedDashboard(deckName: string, config: StudyConfig): Dashbo
   const today = dateKey(now)
   const yesterday = new Date(now); yesterday.setDate(yesterday.getDate()-1)
   const countDay = (key:string) => logs.filter((item) => dateKey(new Date(item.id)) === key).length
-  return { deckName, lessonsAvailable: Math.min(new Set(cards.filter((c)=>c.queue===0).map((c)=>c.noteId)).size, limits.newCards),
+  const nextLessonSize = getOwnedLessonSession(deckName, config).items.length
+  const visible = new Set(cards.map(card => card.cardId))
+  const tomorrow = new Date(now)
+  tomorrow.setHours(24,0,0,0)
+  const upcoming = rowsForDeck(deckName, 'AND c.queue IN (1,2,3)').filter(row => visible.has(row.id))
+  const nextTime = upcoming.reduce((earliest,row) => {
+    if (row.queue === 2 && settings.reviewsPerDay === 0) return earliest
+    const available = Math.max(row.due_at, row.buried_until ?? 0,
+      row.queue === 2 && !limits.reviews ? tomorrow.getTime() : 0)
+    return available > now.getTime() ? Math.min(earliest, available) : earliest
+  }, Infinity)
+  return { deckName, nextLessonSize, firstLesson: !logs.length && nextLessonSize > 0 && !upcoming.length,
+    nextReviewAt: Number.isFinite(nextTime) ? new Date(nextTime).toISOString() : null, lessonsAvailable: Math.min(new Set(cards.filter((c)=>c.queue===0).map((c)=>c.noteId)).size, limits.newCards),
     reviewsDue: reviewDue.length + learningDue.length, learning: learningDue.length,
     completedToday: countDay(today), completedYesterday: countDay(dateKey(yesterday)),
     currentStreak: streak.current, bestStreak: streak.best, dueToday: forecast[0].count,
@@ -322,8 +374,10 @@ export function answerOwnedCard(cardId: number, ease: 1 | 3, requestId?: string)
       const tomorrow = new Date(now); tomorrow.setHours(0,0,0,0); tomorrow.setDate(tomorrow.getDate()+1)
       store.query('UPDATE cards SET buried_until=? WHERE note_id=? AND id<>? AND queue>=0').run(tomorrow.getTime(),row.note_id,cardId)
     }
+    // Use the same revlog kinds as imported Anki reviews.
+    const reviewKind = row.type === 2 ? 1 : row.type === 3 ? 2 : 0
     store.query('INSERT INTO revlog(id,card_id,ease,interval,last_interval,time_ms,kind) VALUES(?,?,?,?,?,?,?)').run(
-      Math.max(now.getTime(),Number((store.query('SELECT COALESCE(MAX(id),0) id FROM revlog').get() as {id:number}).id)+1), cardId, ease, next.card.scheduled_days, row.interval, 0, row.type)
+      Math.max(now.getTime(),Number((store.query('SELECT COALESCE(MAX(id),0) id FROM revlog').get() as {id:number}).id)+1), cardId, ease, next.card.scheduled_days, row.interval, 0, reviewKind)
     const newIntroduced = row.queue===0 ? 1 : 0
     const reviewCompleted = row.type===2 ? 1 : 0
     store.query(`INSERT INTO daily_activity(day,deck_name,new_introduced,reviews_completed) VALUES(?,?,?,?)

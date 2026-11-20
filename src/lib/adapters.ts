@@ -417,6 +417,51 @@ function languageLabel(language: AnswerLanguage, fallback: string): string {
   return fallback
 }
 
+// Codepoints in the deck's bundled _WakaFont.ttf.
+const wakaGlyphs: Record<string, number> = {
+  'bar': 0xf102,
+  'bear': 0xf103,
+  'beggar': 0xf104,
+  'blackjack': 0xf106,
+  'cactus': 0xf10a,
+  'cape': 0xf110,
+  'chinese': 0xf10d,
+  'cleat': 0xf10f,
+  'comb': 0xf113,
+  'coral': 0xf13e,
+  'corn': 0xf114,
+  'creeper': 0xf116,
+  'death-star': 0xf117,
+  'egg': 0xf118,
+  'elf': 0xf155,
+  'explosion': 0xf119,
+  'gladiator': 0xf157,
+  'grass': 0xf121,
+  'gun': 0xf123,
+  'hat': 0xf124,
+  'hills': 0xf127,
+  'horns': 0xf128,
+  'kick': 0xf12a,
+  'leaf': 0xf12c,
+  'morning': 0xf12e,
+  'pope': 0xf135,
+  'psychopath': 0xf138,
+  'satellite': 0xf156,
+  'saw': 0xf148,
+  'spikes': 0xf144,
+  'spring': 0xf14b,
+  'squid': 0xf146,
+  'stick': 0xf147,
+  'tofu': 0xf149,
+  'trash': 0xf107,
+  'triceratops': 0xf14c,
+  'trident': 0xf14d,
+  'viking': 0xf150,
+  'worm': 0xf153,
+  'yurt': 0xf126,
+  'zombie': 0xf154,
+}
+
 function templatePlans(input: DetectionInput): CardPlan[] {
   const entries = Object.entries(input.templates ?? {})
   if (!entries.length) return []
@@ -424,11 +469,27 @@ function templatePlans(input: DetectionInput): CardPlan[] {
   return entries.flatMap(([_name, template], ord) => {
     const front = analyzeTemplate(template.Front)
     const back = analyzeTemplate(template.Back)
+    if (input.modelName === 'Wanikani Ultimate 3' && front.typedFields.includes('card_id') &&
+        ['Meaning', 'Reading'].includes(_name) && input.fields.includes(_name + '_Whitelist')) {
+      return [plan({ ord, kind:'text', direction:'forward', directionLabel:_name,
+        promptField:'Characters', answerFields:[_name, _name + '_Whitelist'], answerMode:'alternatives',
+        answerSeparators:[','], answerLabels:[_name], answerLanguages:['plain','plain'],
+        contextFields:[_name + '_Mnemonic'], audioField:'Audio', wakaPrompt:_name,
+      })]
+    }
+    const recording = front.fields.find(name => /^Recording [12]$/u.test(name))
+    const heard = template.Back.match(/You heard:\s*(?:<[^>]+>\s*)*\{\{(Word [12])\}\}/iu)?.[1]
+    if (heard && recording && ['Word 1','Word 2'].every(name => front.fields.includes(name))) {
+      return [plan({ ord, kind:'audio', direction:'forward', directionLabel:'Listening',
+        promptAudio:true, audioField:recording, promptChoices:['Word 1','Word 2'],
+        answerFields:[heard], answerLanguages:['plain'],
+      })]
+    }
     const frontFields = front.fields
-    const typedFields = front.typedFields
+    const typedFields = front.typedFields.length ? front.typedFields : front.clozeFields
     const backFields = back.fields
     const promptCandidates = frontFields.filter(
-      (name) => !AUDIO_FIELD.test(name) && !IMAGE_FIELD.test(name),
+      (name) => (!front.typedFields.includes(name) || front.clozeFields.includes(name)) && !AUDIO_FIELD.test(name) && !IMAGE_FIELD.test(name),
     )
     const promptField =
       promptCandidates.find((name) => hasText(input, name)) ??
@@ -440,12 +501,13 @@ function templatePlans(input: DetectionInput): CardPlan[] {
         !IMAGE_FIELD.test(name) &&
         !CONTEXT_FIELD.test(name),
     )
+    const answerImageField = backOnly.find(name => IMAGE_FIELD.test(name) || hasImages(input, name))
     const answerFields = typedFields.length
       ? typedFields
       : meaningfulBack.length > 1 &&
           meaningfulBack.every((name) => MULTI_ANSWER_FIELD.test(name))
         ? meaningfulBack
-        : meaningfulBack.slice(0, 1)
+        : meaningfulBack.length ? meaningfulBack.slice(0, 1) : answerImageField ? [answerImageField] : []
     if (!answerFields.length) return []
 
     const contextFields = backOnly.filter(
@@ -464,9 +526,6 @@ function templatePlans(input: DetectionInput): CardPlan[] {
     const promptImageField = frontFields.find(
       (name) => IMAGE_FIELD.test(name) || hasImages(input, name),
     )
-    const answerImageField = backOnly.find(
-      (name) => IMAGE_FIELD.test(name) || hasImages(input, name),
-    )
     const promptLanguage = inferLanguage(
       promptField ?? '',
       input.samples.map((card) => field(card, promptField)),
@@ -474,7 +533,7 @@ function templatePlans(input: DetectionInput): CardPlan[] {
     const answerLanguages = answerFields.map((name) =>
       inferLanguage(name, input.samples.map((card) => field(card, name))),
     )
-    const clozeField = typedFields.find((name) => front.clozeFields.includes(name))
+    const clozeField = front.clozeFields.find(name => answerFields.includes(name))
     const kind: StudyContentKind =
       clozeField
         ? 'cloze'
@@ -552,6 +611,12 @@ function genericConfig(input: DetectionInput): ModelConfig {
 }
 
 export function detectModelConfig(input: DetectionInput): ModelConfig {
+  const templates = Object.values(input.templates ?? {})
+  const sameSideOnly = templates.length > 0 && templates.every(template =>
+    template.Back.includes('{{FrontSide}}') && analyzeTemplate(template.Back).fields.length === 0)
+  if (sameSideOnly || ['Image', 'Question Mask', 'Answer Mask'].every(name => input.fields.includes(name))) {
+    return { ...fallbackGenericConfig(input), enabled: false, confidence: 0, plans: [] }
+  }
   return (
     goetheConfig(input) ??
     namedGermanConfig(input) ??
@@ -772,7 +837,7 @@ function answerParts(card: AnkiCardInfo, plan: CardPlan): AnswerPart[] {
   if (plan.kind === 'cloze' && plan.clozeField) {
     const content = clozeContent(field(card, plan.clozeField), card.ord)
     return content.answers.map((answer, index) => {
-      const language = plan.answerLanguages[index] ?? 'german'
+      const language = plan.answerLanguages[index] ?? plan.answerLanguages[0] ?? 'plain'
       return {
         id: `cloze-${index}`,
         label: 'Missing text',
@@ -872,17 +937,29 @@ export function adaptCard(
   if (!model || !selectedPlan) return null
 
   const parts = answerParts(card, selectedPlan)
-  if (!parts.length) return null
   const cloze = selectedPlan.clozeField
     ? clozeContent(field(card, selectedPlan.clozeField), card.ord)
     : null
   const promptRaw = field(card, selectedPlan.promptField)
+  const radical = selectedPlan.wakaPrompt && promptRaw.match(/class=["']radical-([\w-]+)["']/u)?.[1]
+  const wakaGlyph = radical && wakaGlyphs[radical] ? String.fromCodePoint(wakaGlyphs[radical]) : undefined
+  const promptChoices = selectedPlan.promptChoices?.map(name => plain(field(card,name))).filter(Boolean)
+  const promptText = promptChoices?.length ? promptChoices.join(' or ') : plain(promptRaw)
+  const ranks = /^(?:Flipped)?FEN$/iu.test(selectedPlan.promptField ?? '')
+    ? plain(promptRaw).split(/\s/u)[0].split('/').map(rank => rank.replace(/[1-8]/gu, n => ' '.repeat(Number(n))))
+    : []
+  const chessDiagram = ranks.length === 8 && ranks.every(rank => /^[prnbqkPRNBQK ]{8}$/u.test(rank))
+    ? { ranks, turn: plain(field(card, 'Turn')) }
+    : undefined
   const promptImages = imageFilenames(
     field(card, selectedPlan.imageField ?? selectedPlan.promptField),
   )
   const answerImages = imageFilenames(
     field(card, selectedPlan.answerImageField),
   )
+  const embeddedPromptAudio = audioFilenames(promptRaw)
+  const selfGrade = !parts.length && answerImages.length > 0 && Boolean(plain(promptRaw) || promptImages.length || embeddedPromptAudio.length || selectedPlan.promptAudio)
+  if (!parts.length && !selfGrade) return null
   const configuredAudioFields = selectedPlan.audioFields?.length
     ? selectedPlan.audioFields
     : selectedPlan.audioField
@@ -895,7 +972,9 @@ export function adaptCard(
       ),
     ),
   ]
-  const audio = audioFiles[0] ?? null
+  const promptAudio = selectedPlan.promptAudio ? audioFiles : embeddedPromptAudio
+  if (!wakaGlyph && !promptText && !cloze?.prompt && !promptImages.length && !promptAudio.length) return null
+  const answerAudio = audioFiles.filter(name => !promptAudio.includes(name))
   const itemDetails = details(card, selectedPlan)
   const note = plain(field(card, selectedPlan.noteField))
   const canonicalAnswer = parts.map((part) => part.canonicalAnswer).join(' · ')
@@ -906,7 +985,11 @@ export function adaptCard(
     modelName: card.modelName,
     direction: selectedPlan.direction,
     directionLabel: selectedPlan.directionLabel,
-    prompt: cloze?.prompt ?? plain(promptRaw),
+    chessDiagram,
+    wakaGlyph,
+    promptLabel: selectedPlan.wakaPrompt,
+    selfGrade,
+    prompt: chessDiagram ? (chessDiagram.turn ? `${chessDiagram.turn} to move` : 'Find the move') : cloze?.prompt ?? promptText,
     promptLanguage:
       selectedPlan.promptLanguage ??
       inferLanguage(
@@ -918,8 +1001,8 @@ export function adaptCard(
     acceptedAnswers: parts[0]?.acceptedAnswers ?? [],
     answerParts: parts,
     contentKind: selectedPlan.kind,
-    promptAudioFilename: selectedPlan.promptAudio ? audio : null,
-    promptAudioFilenames: selectedPlan.promptAudio ? audioFiles : [],
+    promptAudioFilename: promptAudio[0] ?? null,
+    promptAudioFilenames: promptAudio,
     promptImageFilenames: promptImages,
     answerImageFilenames: answerImages,
     details: itemDetails,
@@ -934,8 +1017,8 @@ export function adaptCard(
     sourceExample: plain(field(card, selectedPlan.sourceExampleField)),
     targetExample: plain(field(card, selectedPlan.targetExampleField)),
     note,
-    audioFilename: selectedPlan.promptAudio ? null : audio,
-    audioFilenames: selectedPlan.promptAudio ? [] : audioFiles,
+    audioFilename: answerAudio[0] ?? null,
+    audioFilenames: answerAudio,
     interval: card.interval,
     type: card.type,
     queue: card.queue,

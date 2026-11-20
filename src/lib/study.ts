@@ -84,12 +84,13 @@ function queuePriority(card: StudyCard): number {
   return 2
 }
 
-export function buildStudyQueue(cards: StudyCard[]): StudyCard[] {
+export function buildStudyQueue(cards: StudyCard[], recall?: ReadonlyMap<number, number>): StudyCard[] {
   const sorted = cards
     .filter((card) => card.queue >= 0)
     .toSorted(
       (a, b) =>
         queuePriority(a) - queuePriority(b) ||
+        ((recall?.get(a.cardId) ?? 2) - (recall?.get(b.cardId) ?? 2)) ||
         a.due - b.due ||
         a.cardId - b.cardId,
     )

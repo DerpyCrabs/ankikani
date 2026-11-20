@@ -2,7 +2,10 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+
+const neuralRuntime = vi.hoisted(() => ({ rwkvAvailable: vi.fn(() => false), refreshReviewScores: vi.fn() }))
+vi.mock('../server/rwkv/refresh', () => neuralRuntime)
 
 const testDirectory = mkdtempSync(path.join(tmpdir(), 'ankikani-owned-'))
 process.env.ANKIKANI_DATA_DIR = testDirectory
@@ -36,19 +39,45 @@ describe('owned collection scheduler', () => {
     expect(owned.getOwnedReviewSession('Deck',config).cards).toHaveLength(1)
   })
 
+  it('ranks due reviews before sibling selection and ignores obsolete scores', () => {
+    const database = new Database(owned.collectionPath())
+    const config = owned.getOwnedDeckProfile('Deck').suggestedConfig!
+    const previous = Date.now() - 86400000
+    const today = new Date().toLocaleDateString('sv-SE')
+    database.query('INSERT INTO revlog(id,card_id,ease) VALUES(?,?,3)').run(previous,101)
+    database.query('INSERT INTO instant_scores VALUES(?,?,?,?)').run(101,previous,today,0.3)
+    try {
+      neuralRuntime.rwkvAvailable.mockReturnValue(true)
+      owned.updateOwnedSettings('Deck',{...owned.DEFAULT_SETTINGS,neuralReviewOrder:false})
+      expect(owned.getOwnedReviewSession('Deck',config).cards[0].cardId).toBe(100)
+      owned.updateOwnedSettings('Deck',{...owned.DEFAULT_SETTINGS,neuralReviewOrder:true})
+      neuralRuntime.rwkvAvailable.mockReturnValue(false)
+      expect(owned.getOwnedReviewSession('Deck',config).cards[0].cardId).toBe(100)
+      neuralRuntime.rwkvAvailable.mockReturnValue(true)
+      expect(owned.getOwnedReviewSession('Deck',config).cards.map(card => card.cardId)).toEqual([101])
+      database.query('INSERT INTO revlog(id,card_id,ease) VALUES(?,?,3)').run(previous+1,101)
+      expect(owned.getOwnedReviewSession('Deck',config).cards.map(card => card.cardId)).toEqual([100])
+    } finally {
+      neuralRuntime.rwkvAvailable.mockReturnValue(false)
+      database.query('DELETE FROM instant_scores WHERE card_id=101').run()
+      database.query('DELETE FROM revlog WHERE card_id=101').run()
+      database.close()
+    }
+  })
+
   it('grades once, persists FSRS state, and buries the sibling', () => {
     expect(owned.answerOwnedCard(100,3,'request-1')).toEqual({saved:true,cardId:100,ease:3})
     expect(owned.answerOwnedCard(100,3,'request-1')).toEqual({saved:true,cardId:100,ease:3})
     const database = new Database(owned.collectionPath())
     const answered = database.query('SELECT queue,due_at,reps FROM cards WHERE id=100').get() as {queue:number;due_at:number;reps:number}
     const sibling = database.query('SELECT buried_until FROM cards WHERE id=101').get() as {buried_until:number}
-    const logs = database.query('SELECT COUNT(*) count FROM revlog').get() as {count:number}
+    const logs = database.query('SELECT kind FROM revlog').all()
     database.close()
     expect(answered.queue).toBe(2)
     expect(answered.due_at).toBeGreaterThan(Date.now())
     expect(answered.reps).toBe(3)
     expect(sibling.buried_until).toBeGreaterThan(Date.now())
-    expect(logs.count).toBe(1)
+    expect(logs).toEqual([{kind:1}])
   })
 
   it('enforces the review limit across sessions and avoids revlog ID collisions', () => {

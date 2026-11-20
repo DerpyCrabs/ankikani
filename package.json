@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "rwkv:setup": "bun server/rwkv/setup.ts",
     "dev": "bun --watch server/dev.ts",
     "build": "tsc -b && vite build",
     "start": "bun server/index.ts",

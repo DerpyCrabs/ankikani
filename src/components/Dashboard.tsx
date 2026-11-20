@@ -22,7 +22,6 @@ type DashboardProps = {
   configuration: StudyConfig
   onLessons: () => void
   onReviews: () => void
-  onConfigure: () => void
   onScheduling: () => void
   onRetry: () => void
 }
@@ -48,12 +47,9 @@ export const Dashboard = component(
             <div class="flex gap-2">
               <button class="button-quiet" onClick={props.onScheduling}>
                 <Settings2 class="size-4" />
-                Scheduling
+                Deck settings
               </button>
-              <button class="button-quiet" onClick={props.onConfigure}>
-                <Settings2 class="size-4" />
-                Fields
-              </button>
+
             </div>
           </div>
 
@@ -62,14 +58,18 @@ export const Dashboard = component(
               kind="lesson"
               count={data.lessonsAvailable}
               title="Lessons"
+              hint={data.nextLessonSize ? `${data.nextLessonSize} ${data.nextLessonSize === 1 ? 'word' : 'words'} in your next lesson` : undefined}
               action="Start lessons"
-              disabled={data.lessonsAvailable === 0}
+              disabled={(data.nextLessonSize ?? data.lessonsAvailable) === 0}
               onClick={props.onLessons}
             />
             <ActionCard
               kind="review"
               count={data.reviewsDue}
               title="Reviews"
+              hint={data.reviewsDue ? undefined : data.nextReviewAt
+                ? `Next review · ${new Date(data.nextReviewAt).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}`
+                : data.firstLesson ? 'Reviews begin after your first lesson.' : undefined}
               action="Start reviews"
               disabled={data.reviewsDue === 0}
               onClick={props.onReviews}
@@ -170,6 +170,7 @@ const ActionCard = view<{
   kind: 'lesson' | 'review'
   count: number
   title: string
+  hint?: string
   action: string
   disabled: boolean
   onClick: () => void
@@ -177,7 +178,7 @@ const ActionCard = view<{
   const lesson = props.kind === 'lesson'
   return (
     <article
-      class={`card-shell relative overflow-hidden p-6 sm:p-7 lg:col-span-4 ${
+      class={`card-shell relative flex flex-col overflow-hidden p-6 sm:p-7 lg:col-span-4 ${
         lesson ? 'bg-[var(--yellow-soft)]' : 'bg-[var(--mint-soft)]'
       }`}
     >
@@ -186,7 +187,7 @@ const ActionCard = view<{
           lesson ? 'border-[var(--yellow)]/35' : 'border-[var(--mint)]/30'
         }`}
       />
-      <div class="relative">
+      <div class="relative flex flex-1 flex-col">
         <div
           class={`mb-8 grid size-13 place-items-center rounded-2xl ${
             lesson ? 'bg-[var(--yellow)] text-[var(--ink)]' : 'bg-[var(--mint)] text-white'
@@ -200,10 +201,13 @@ const ActionCard = view<{
             {props.count}
           </span>
         </div>
-        <button class="button-ink mt-5 w-full" disabled={props.disabled} onClick={props.onClick}>
+        {props.hint ? <p class="mt-2 text-sm font-medium text-[var(--muted)]">{props.hint}</p> : null}
+        <div class="mt-auto pt-5">
+        <button class="button-ink w-full" disabled={props.disabled} onClick={props.onClick}>
           {props.disabled ? `No ${props.title.toLowerCase()} now` : props.action}
           <ChevronRight class="size-4" />
         </button>
+        </div>
       </div>
     </article>
   )

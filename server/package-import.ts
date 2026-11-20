@@ -9,7 +9,7 @@ import { Deck_NormalSchema } from '../node_modules/ankipack/dist/generated/anki/
 import { Notetype_Template_ConfigSchema } from '../node_modules/ankipack/dist/generated/anki/notetypes_pb.js'
 import { buildDeckConfig } from '../src/lib/adapters'
 import type { AnkiCardInfo, SchedulingSettings } from '../src/lib/domain'
-import { createSchema, DEFAULT_SETTINGS } from './owned'
+import { countImportableCards, createSchema, DEFAULT_SETTINGS } from './owned'
 import { activateCollection, collectionImport, withStagingDatabase, validateCollection } from './collection-import'
 
 const sqlPromise = initSqlJs({
@@ -25,6 +25,7 @@ export interface PackageImportReport {
   decks:number
   notes:number
   cards:number
+  studyCards:number
   reviews:number
   media:number
   compatibility:Array<{modelName:string;status:string;reason:string}>
@@ -195,7 +196,7 @@ export async function importPackageBytes(bytes:Uint8Array,file:string,kind:'apkg
       const compatibility = buildDeckConfig('Imported collection',samples).compatibility.map(({modelName,status,reason})=>({modelName,status,reason}))
       const counts = {notes:data.notes.length,cards:data.cards.length,reviews:data.revlog.length,media:data.media.length}
       validateCollection(targetDb, counts)
-      return { file, kind, decks: data.decks.length, ...counts, compatibility }
+      return { file, kind, decks: data.decks.length, ...counts, studyCards:countImportableCards(targetDb), compatibility }
     }))
     return { ...report, backup: activateCollection(staging) }
   })))

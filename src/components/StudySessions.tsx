@@ -24,7 +24,7 @@ import { AudioButton, AudioShortcut } from './StudyAudio'
 import { playAudioSequence, stopAudioPlayback } from './playback'
 import { lessonQueue, reviewQueue, scheduledCards } from '../lib/resources'
 
-type StudyPhase = 'answering' | 'correction' | 'retrying' | 'feedback'
+type StudyPhase = 'answering' | 'revealed' | 'correction' | 'retrying' | 'feedback'
 
 function promptAudioFiles(card: StudyCard) {
   return card.promptAudioFilenames?.length
@@ -57,7 +57,7 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
     if (
       !Number.isInteger(candidate.index) ||
       (candidate.index ?? -1) < 0 ||
-      !['answering', 'correction', 'retrying', 'feedback'].includes(candidate.phase ?? '') ||
+      !['answering', 'revealed', 'correction', 'retrying', 'feedback'].includes(candidate.phase ?? '') ||
       !['correct', 'incorrect', null].includes(candidate.result ?? null) ||
       (candidate.inputs !== undefined &&
         (!Array.isArray(candidate.inputs) ||
@@ -267,8 +267,11 @@ const LessonTeaching = view<{
             </button>
           </div>
         </div>
-        <div class="grid gap-4 md:grid-cols-2">
+        <div data-step={props.index % 2} class="lesson-pair grid gap-4 md:grid-cols-2">
           <div class="card-shell bg-[var(--mint-soft)] p-6 sm:p-8">
+            {card()?.promptLabel ? <p class="eyebrow mb-2">{card()?.promptLabel}</p> : null}
+            {card()?.wakaGlyph ? <span class="waka-glyph">{card()?.wakaGlyph}</span> : null}
+            {card()?.chessDiagram ? <ChessDiagram diagram={card()!.chessDiagram!} /> : null}
             {props.item.imageFilenames?.length ? (
               <div class="mb-4 flex flex-wrap gap-3">
                 {list(props.item.imageFilenames ?? [], (filename) => (
@@ -278,7 +281,7 @@ const LessonTeaching = view<{
             ) : null}
             <h1 class="text-3xl font-black tracking-[-0.045em]">
               <GermanArticleText
-                value={card()?.prompt || props.item.sourceWord || 'Listen'}
+                value={card()?.prompt || props.item.sourceWord || (props.item.imageFilenames?.length || card()?.wakaGlyph ? '' : 'Listen')}
                 language={card()?.promptLanguage}
               />
             </h1>
@@ -289,6 +292,9 @@ const LessonTeaching = view<{
             ) : null}
           </div>
           <div class="card-shell bg-[var(--violet-soft)] p-6 sm:p-8">
+            {list(card()?.answerImageFilenames ?? [], filename => (
+              <img class="mx-auto mb-4 max-h-64 max-w-full rounded-xl object-contain" src={api.mediaUrl(filename)} alt="Answer illustration" />
+            ))}
             <h2 class="text-3xl font-black tracking-[-0.04em]">
               <GermanArticleText
                 value={card()?.canonicalAnswer || props.item.targetMeaning}
@@ -318,6 +324,18 @@ const LessonTeaching = view<{
 })
 
 type RunnerProps = SessionProps & { mode: 'lesson' | 'review'; cards: StudyCard[]; onComplete?: () => void }
+
+const chessPieces: Record<string, string> = {
+  K:'♔', Q:'♕', R:'♖', B:'♗', N:'♘', P:'♙', k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟',
+}
+const ChessDiagram = view<{ diagram: NonNullable<StudyCard['chessDiagram']> }>(({ diagram }) => (
+  <div class="mx-auto mb-5 grid aspect-square w-full max-w-72 grid-cols-8 overflow-hidden rounded-xl border border-black/15"
+    role="img" aria-label={`Chess position: ${diagram.ranks.map(rank => rank.replace(/ +/gu, spaces => String(spaces.length))).join('/')}`}>
+    {list(diagram.ranks.flatMap(rank => [...rank]), (piece, index) => (
+      <span class={`grid place-items-center text-2xl leading-none ${(Math.floor(index / 8) + index) % 2 ? 'bg-[var(--mint)]/40' : 'bg-[var(--paper)]'}`}>{chessPieces[piece] ?? ''}</span>
+    ))}
+  </div>
+))
 
 const partsFor = (card: StudyCard): AnswerPart[] =>
   card.answerParts?.length
@@ -443,14 +461,20 @@ const StudyRunner = component(
         next()
         return
       }
-      const correcting = state.phase === 'correction'
-      if (!correcting && !partsFor(card).every((part, i) => matchesAnswerPart(state.inputs[i] ?? '', part))) {
+      if (card.selfGrade && state.phase !== 'revealed') {
+        patch({ phase: 'revealed' })
+        return
+      }
+      const rating = (event.submitter as HTMLButtonElement | null)?.value
+      if (card.selfGrade && rating !== 'again' && rating !== 'good') return
+      const correcting = card.selfGrade ? rating === 'again' : state.phase === 'correction'
+      if (!card.selfGrade && !correcting && !partsFor(card).every((part, i) => matchesAnswerPart(state.inputs[i] ?? '', part))) {
         patch({ phase: 'correction' })
         owner.run('answer-audio', playAudioSequence(answerAudioFiles(card), promptAudioFiles(card)), 'replace')
         return
       }
       const requestId = state.gradeRequestId || crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
-      patch({ saving: true, error: '', gradeRequestId: requestId })
+      patch({ saving: true, error: '', gradeRequestId: requestId, ...(card.selfGrade ? { result: correcting ? 'incorrect' as const : 'correct' as const } : {}) })
       const grade: Effect.Effect<{ saved: boolean; stale?: boolean }, Error> = card.practiceOnly
         ? Effect.succeed({ saved: true, stale: false })
         : api.answer(card.cardId, correcting ? 1 : 3, requestId)
@@ -469,7 +493,7 @@ const StudyRunner = component(
                 patch({ sessionCards: [...state.sessionCards, { ...card, practiceOnly: true }] })
               }
               patch({ saving: false })
-              if (correcting || response.stale) next()
+              if (card.selfGrade || correcting || response.stale) next()
               else {
                 patch({ result: 'correct', phase: 'feedback' })
                 owner.run('answer-audio', playAudioSequence(answerAudioFiles(card), promptAudioFiles(card)), 'replace')
@@ -482,7 +506,7 @@ const StudyRunner = component(
     }
 
     return view(
-      ({ props, sessionCards, index, phase, result, saving, restoring, restoreError, inputs, error }) => {
+      ({ props, sessionCards, index, phase, result, gradeRequestId, saving, restoring, restoreError, inputs, error }) => {
         if (restoring || restoreError)
           return (
             <SessionLoading
@@ -504,7 +528,7 @@ const StudyRunner = component(
         const progress = index + 1
         const promptAudio = promptAudioFiles(card)
         const answerAudio = answerAudioFiles(card)
-        const revealed = phase === 'correction' || phase === 'feedback'
+        const revealed = phase === 'revealed' || phase === 'correction' || phase === 'feedback'
         const shortcutAudio = revealed && answerAudio.length ? answerAudio : promptAudio
         const shortcutFallbackAudio = revealed && answerAudio.length ? promptAudio : []
         return (
@@ -530,7 +554,7 @@ const StudyRunner = component(
             }
           >
             <AudioShortcut filenames={shortcutAudio} fallbackFilenames={shortcutFallbackAudio} />
-            <article class="mx-auto w-full max-w-xl">
+            <article data-study-phase={phase} class="mx-auto w-full max-w-xl">
               <div
                 class={`card-shell p-6 transition-colors sm:p-8 ${
                   phase === 'correction'
@@ -566,6 +590,9 @@ const StudyRunner = component(
                     />
                   </div>
                 ) : null}
+                {card.promptLabel ? <p class="eyebrow mb-2 text-center">{card.promptLabel}</p> : null}
+                {card.wakaGlyph ? <span class="waka-glyph">{card.wakaGlyph}</span> : null}
+                {card.chessDiagram ? <ChessDiagram diagram={card.chessDiagram} /> : null}
                 {card.promptImageFilenames?.length ? (
                   <div class="mb-5 flex flex-wrap justify-center gap-3">
                     {list(card.promptImageFilenames ?? [], (filename) => (
@@ -586,7 +613,7 @@ const StudyRunner = component(
                 <form class="mt-7" onSubmit={submit}>
                   <div class="mx-auto max-w-sm space-y-3">
                     {list(
-                      partsFor(card) ?? [],
+                      card.selfGrade ? [] : partsFor(card),
                       (item) => item.id,
                       (part, partIndex) => (
                         <label class="block">
@@ -637,7 +664,7 @@ const StudyRunner = component(
                     )}
                   </div>
 
-                  {phase === 'correction' || phase === 'feedback' ? (
+                  {revealed ? (
                     <Feedback card={card} promptAudio={promptAudio} />
                   ) : null}
 
@@ -651,7 +678,10 @@ const StudyRunner = component(
                   ) : null}
 
                   <div class="mx-auto mt-5 max-w-sm">
-                    <button class="button-soft-primary w-full" disabled={saving}>
+                    {phase === 'revealed' ? <div class="grid grid-cols-2 gap-3">
+                      <button class="button-quiet" value="again" disabled={saving || Boolean(gradeRequestId && result === 'correct')}>Again</button>
+                      <button class="button-soft-primary" value="good" disabled={saving || Boolean(gradeRequestId && result === 'incorrect')}>Good</button>
+                    </div> : <button class="button-soft-primary w-full" disabled={saving}>
                       {saving ? (
                         <>
                           <LoaderCircle class="size-4 animate-spin" />
@@ -660,10 +690,10 @@ const StudyRunner = component(
                       ) : phase === 'feedback' || phase === 'correction' ? (
                         'Continue'
                       ) : (
-                        'Check answer'
+                        card.selfGrade ? 'Show answer' : 'Check answer'
                       )}
                       {!saving ? <ChevronRight class="size-4" /> : null}
-                    </button>
+                    </button>}
                   </div>
                 </form>
               </div>
@@ -689,7 +719,7 @@ const Feedback = view<{
   promptAudio: string[]
 }>((props) => {
   return (
-    <div class="mt-6 border-t border-black/10 pt-6">
+    <div class="answer-details mt-6 border-t border-black/10 pt-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p class="text-2xl font-black">

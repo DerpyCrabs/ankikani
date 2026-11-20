@@ -118,6 +118,10 @@ function cleanupSource(value: string): string {
 }
 
 function expandOptionalGroups(value: string): string[] {
+  // Long dictionary definitions can contain dozens of parenthetical clauses.
+  // Keep the full reading rather than generating every subset of those clauses.
+  if ((value.match(/\(/gu)?.length ?? 0) > 6) return [value]
+
   const match = value.match(/^(.*?)\(([^()]*)\)(.*)$/u)
   if (!match) return [value]
 

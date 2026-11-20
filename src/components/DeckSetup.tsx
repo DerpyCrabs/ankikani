@@ -1,3 +1,4 @@
+import { Choice } from './Choice'
 import Check from '@effectweb/lucide/icons/check'
 import ChevronRight from '@effectweb/lucide/icons/chevron-right'
 import { component, list, view } from 'effectweb'
@@ -226,7 +227,7 @@ export const DeckSetup = component(
       }
 
       return (
-        <section class="mx-auto max-w-4xl">
+        <section class="settings-enter mx-auto max-w-4xl">
           <div class="mb-7">
             <h1 class="text-3xl font-black tracking-[-0.04em]">Deck setup</h1>
             <p class="mt-2 text-[var(--muted)]">
@@ -485,17 +486,8 @@ const FieldSelect = view<{
       {props.label}
       {props.optional ? <span class="font-medium text-[var(--muted)]">Optional</span> : null}
     </span>
-    <select
-      class="field-control"
-      value={props.value}
-      required={props.required}
-      onInput={(event) => props.onInput(event.currentTarget.value)}
-    >
-      {props.optional ? <option value="">Not used</option> : null}
-      {list(props.options, (option) => (
-        <option value={option}>{option}</option>
-      ))}
-    </select>
+    <Choice label={props.label} required={props.required} value={props.value} onChoose={props.onInput}
+      options={[...(props.optional ? [{ value: '', label: 'Not used' }] : []), ...props.options.map(value => ({ value, label: value }))]} />
   </label>
 ))
 
@@ -507,15 +499,8 @@ const TemplateSelect = view<{
 }>((props) => (
   <label class="block">
     <span class="field-label">{props.label}</span>
-    <select
-      class="field-control"
-      value={`${props.value}`}
-      onInput={(event) => props.onInput(Number(event.currentTarget.value))}
-    >
-      {list(props.names, (name, index) => (
-        <option value={`${index}`}>{name}</option>
-      ))}
-    </select>
+    <Choice label={props.label} value={String(props.value)} onChoose={value => props.onInput(Number(value))}
+      options={props.names.map((label,index) => ({value: String(index), label}))} />
   </label>
 ))
 
@@ -526,15 +511,8 @@ const LanguageSelect = view<{
 }>((props) => (
   <label class="block">
     <span class="field-label">{props.label}</span>
-    <select
-      class="field-control"
-      value={props.value}
-      onInput={(event) => props.onInput(event.currentTarget.value as AnswerLanguage)}
-    >
-      <option value="german">German</option>
-      <option value="english">English</option>
-      <option value="plain">Other</option>
-    </select>
+    <Choice label={props.label} value={props.value} onChoose={value => props.onInput(value as AnswerLanguage)}
+      options={[{value:'german',label:'German'},{value:'english',label:'English'},{value:'plain',label:'Other'}]} />
   </label>
 ))
 
@@ -544,14 +522,7 @@ const AnswerModeSelect = view<{
 }>((props) => (
   <label class="block">
     <span class="field-label">Answer format</span>
-    <select
-      class="field-control"
-      value={props.value}
-      onInput={(event) => props.onInput(event.currentTarget.value as AnswerMode)}
-    >
-      <option value="parts">Separate fields</option>
-      <option value="alternatives">Either field</option>
-      <option value="unordered">List, any order</option>
-    </select>
+    <Choice label="Answer format" value={props.value} onChoose={value => props.onInput(value as AnswerMode)}
+      options={[{value:'parts',label:'Separate fields'},{value:'alternatives',label:'Either field'},{value:'unordered',label:'List, any order'}]} />
   </label>
 ))

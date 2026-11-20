@@ -4,6 +4,8 @@ export type AnswerMode = 'parts' | 'alternatives' | 'unordered'
 export type StudyContentKind = 'text' | 'cloze' | 'audio' | 'image' | 'multi'
 
 export interface SchedulingSettings {
+  neuralReviewOrder?: boolean
+  rwkvAvailable?: boolean
   newPerDay: number
   reviewsPerDay: number
   desiredRetention: number
@@ -30,6 +32,8 @@ export interface FieldMapping {
 }
 
 export interface CardPlan {
+  wakaPrompt?: string
+  promptChoices?: string[]
   ord: number
   kind: StudyContentKind
   direction: Direction
@@ -148,6 +152,10 @@ export interface StudyDetail {
 }
 
 export interface StudyCard {
+  wakaGlyph?: string
+  promptLabel?: string
+  selfGrade?: boolean
+  chessDiagram?: { ranks: string[]; turn: string }
   cardId: number
   noteId: number
   modelName: string
@@ -220,6 +228,9 @@ export interface SpreadLegendItem {
 
 export interface DashboardData {
   deckName: string
+  nextLessonSize?: number
+  nextReviewAt?: string | null
+  firstLesson?: boolean
   lessonsAvailable: number
   reviewsDue: number
   learning: number

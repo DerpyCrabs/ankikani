@@ -75,6 +75,7 @@ export type PackageImportReport = {
   kind: 'apkg' | 'colpkg'
   decks: number
   notes: number
+  studyCards: number
   cards: number
   reviews: number
   media: number

@@ -188,7 +188,7 @@ afterEach(() => {
 describe('application integration', () => {
   it('loads and saves scheduling settings through query mutations', async () => {
     renderApp()
-    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    fireEvent.click(await screen.findByRole('button',{name:'Deck settings'}))
     const daily=await screen.findByRole('spinbutton',{name:'New cards per day'})
     fireEvent.input(daily,{target:{value:'12'}})
     fireEvent.click(screen.getByRole('button',{name:'Save'}))
@@ -197,15 +197,16 @@ describe('application integration', () => {
   })
 
   it('imports a package and displays the validation report', async () => {
-    mocks.importPackage.mockResolvedValue({file:'deck.apkg',kind:'apkg',decks:1,notes:2,cards:4,reviews:7,media:3,compatibility:[],backup:'/tmp/backup.sqlite'})
+    mocks.importPackage.mockResolvedValue({file:'deck.apkg',kind:'apkg',decks:1,notes:2,cards:4,studyCards:3,reviews:7,media:3,compatibility:[],backup:'/tmp/backup.sqlite'})
     vi.spyOn(window,'confirm').mockReturnValue(true)
     renderApp()
-    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    fireEvent.click(await screen.findByRole('button',{name:'Deck settings'}))
     const file=new File(['fixture'],'deck.apkg',{type:'application/octet-stream'})
     fireEvent.change(await screen.findByLabelText('Anki package'),{target:{files:[file]}})
     fireEvent.click(screen.getByRole('button',{name:'Import package'}))
     expect(await screen.findByText('Import validated')).toBeTruthy()
     expect(screen.getByText(/2 notes, 4 cards, 7 reviews/)).toBeTruthy()
+    expect(screen.getByText(/3 of 4 cards have a study prompt and answer/)).toBeTruthy()
   })
 
   it('shows backup restore failures without leaving settings', async () => {
@@ -213,7 +214,7 @@ describe('application integration', () => {
     mocks.restoreBackup.mockRejectedValue(new Error('Backup is damaged'))
     vi.spyOn(window,'confirm').mockReturnValue(true)
     renderApp()
-    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    fireEvent.click(await screen.findByRole('button',{name:'Deck settings'}))
     fireEvent.click(await screen.findByRole('button',{name:'Restore'}))
     expect((await screen.findByRole('alert')).textContent).toContain('Backup is damaged')
     expect(window.location.pathname).toBe('/settings')
@@ -224,14 +225,15 @@ describe('application integration', () => {
     renderApp()
 
     const selector = await screen.findByRole('combobox', { name: 'Active deck' })
-    expect((selector as HTMLSelectElement).value).toBe('German')
+    expect(selector.textContent).toBe('German')
     await screen.findByRole('heading', { name: 'Lessons' })
     expect(screen.queryByText('Recall, then reveal')).toBeNull()
     expect(screen.queryByText('Deck dashboard')).toBeNull()
     expect(screen.queryByText('Next 24 hours')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Today\b/ })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
-    fireEvent.change(selector, { target: { value: 'Default' } })
+    fireEvent.click(selector)
+    fireEvent.click(await screen.findByRole('option', {name:'Default'}))
 
     await screen.findByText('Nothing to study here yet')
     expect(localStorage.getItem(profileKey('Test'))).toBe('Default')
@@ -250,7 +252,7 @@ describe('application integration', () => {
 
     renderApp()
     const selector = await screen.findByRole('combobox', { name: 'Active deck' })
-    expect((selector as HTMLSelectElement).value).toBe('German')
+    expect(selector.textContent).toBe('German')
     await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German'))
     await screen.findByRole('heading', { name: 'Lessons' })
     mocks.health.mockClear()
@@ -267,7 +269,7 @@ describe('application integration', () => {
     await waitFor(() => {
       expect(mocks.health).toHaveBeenCalledTimes(1)
       expect(mocks.profile).toHaveBeenCalledWith('Default')
-      expect((selector as HTMLSelectElement).value).toBe('Default')
+      expect(selector.textContent).toBe('Default')
     })
     await screen.findByText('Nothing to study here yet')
     expect(mocks.profile).toHaveBeenCalledWith('Default')
@@ -877,9 +879,8 @@ describe('application integration', () => {
     await screen.findByRole('heading', { name: reviewCard.prompt })
     expect(window.location.pathname).toBe('/reviews')
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Active deck' }), {
-      target: { value: 'Default' },
-    })
+    fireEvent.click(screen.getByRole('combobox', { name: 'Active deck' }))
+    fireEvent.click(await screen.findByRole('option', {name:'Default'}))
 
     await screen.findByText('Nothing to study here yet')
     expect(window.location.pathname).toBe('/')
@@ -899,6 +900,18 @@ describe('application integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await screen.findByText(reviewCard.prompt)
     expect(window.location.pathname).toBe('/reviews')
+  })
+
+  it.each([['Again', 1], ['Good', 3]])('grades a revealed illustration as %s', async (label, ease) => {
+    mocks.reviews.mockResolvedValue({ deckName:'German', cards:[{
+      ...reviewCard, selfGrade:true, canonicalAnswer:'', acceptedAnswers:[], answerImageFilenames:['key.png'],
+    }] })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', {name:'Start reviews'}))
+    fireEvent.click(await screen.findByRole('button', {name:'Show answer'}))
+    expect(mocks.answer).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', {name:String(label)}))
+    await waitFor(() => expect(mocks.answer).toHaveBeenCalledWith(reviewCard.cardId, ease, expect.any(String)))
   })
 
   it('preserves answer and queue position when grading fails', async () => {

@@ -83,6 +83,9 @@ export const CollectionImportView = component(
                 {report.notes} notes, {report.cards} cards, {report.reviews} reviews, and {report.media} media
                 files imported.
               </p>
+              <p class="mt-2 text-sm font-semibold">
+                {report.studyCards} of {report.cards} cards have a study prompt and answer with automatic field mapping.
+              </p>
               {report.compatibility.length > 0 && (
                 <ul class="mt-3 space-y-1 text-sm">
                   {list(

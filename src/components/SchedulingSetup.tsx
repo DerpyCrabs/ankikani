@@ -6,7 +6,7 @@ import type { SchedulingSettings } from '../lib/domain'
 import { deckSettings, collectionBackups, saveDeckSettings } from '../lib/resources'
 import { CollectionImportView } from './CollectionImport'
 
-type Props = { cache: QueryCache; deckName: string; onClose: () => void; onSaved: () => void }
+type Props = { cache: QueryCache; deckName: string; onClose: () => void; onSaved: () => void; onConfigure: () => void }
 
 export const SchedulingSetup = component(
   {
@@ -34,6 +34,7 @@ export const SchedulingSetup = component(
               .filter(Boolean) as SchedulingSettings['learningSteps']
           const value: SchedulingSettings = {
             ...current,
+            neuralReviewOrder: form.get('neuralReviewOrder') === 'on',
             newPerDay: Number(form.get('newPerDay')),
             reviewsPerDay: Number(form.get('reviewsPerDay')),
             desiredRetention: Number(form.get('desiredRetention')),
@@ -75,11 +76,11 @@ export const SchedulingSetup = component(
         }
 
         return (
-          <form class="mx-auto max-w-3xl card-shell bg-white p-6 sm:p-8" onSubmit={submit}>
+          <form class="settings-enter mx-auto max-w-3xl card-shell bg-white p-6 sm:p-8" onSubmit={submit}>
             <p class="eyebrow">{props.deckName}</p>
-            <h1 class="mt-2 text-3xl font-black">Scheduling</h1>
+            <h1 class="mt-2 text-3xl font-black">Deck settings</h1>
             <p class="mt-2 text-sm text-[var(--muted)]">
-              Again and Good remain the only grades. These settings control the queue around them.
+              Choose how many new cards and reviews to study each day.
             </p>
             <div class="mt-7 grid gap-5 sm:grid-cols-2">
               <NumberField
@@ -96,6 +97,19 @@ export const SchedulingSetup = component(
                 min="0"
                 step="1"
               />
+            </div>
+            <label class="mt-6 flex items-center gap-3 text-sm font-bold">
+              <input type="checkbox" name="neuralReviewOrder" checked={current.neuralReviewOrder !== false} />
+              Prioritize reviews with RWKV-Instant when installed
+            </label>
+            <p class="mt-1 text-sm text-[var(--muted)]">
+              {current.rwkvAvailable ? 'Turn off to review in due-date order.' : 'RWKV-Instant is not installed. Reviews follow due-date order.'}
+              {' '}FSRS schedules the intervals in both modes.
+            </p>
+            <details class="mt-6 rounded-xl border border-black/10 p-4">
+              <summary class="cursor-pointer font-bold">Advanced settings</summary>
+              <button type="button" class="button-quiet mt-4" onClick={props.onConfigure}>Card fields and templates</button>
+              <div class="mt-5 grid gap-5 sm:grid-cols-2">
               <NumberField
                 name="desiredRetention"
                 label="Desired retention"
@@ -133,6 +147,7 @@ export const SchedulingSetup = component(
               </label>
             </div>
             <p class="mt-4 text-xs text-[var(--muted)]">Steps accept values such as 1m, 10m, 1h, or 1d.</p>
+            </details>
             {error ? (
               <p role="alert" class="mt-4 font-bold text-red-700">
                 {error}

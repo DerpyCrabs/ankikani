@@ -198,6 +198,7 @@ export default component({ init: initialState }, (owner) => {
           <SchedulingSetup
             cache={cache}
             deckName={deckName}
+            onConfigure={() => navigate('mapping')}
             onSaved={() => {
               refresh()
               home()
@@ -225,7 +226,6 @@ export default component({ init: initialState }, (owner) => {
           configuration={configuration!}
           onLessons={() => navigate('lesson')}
           onReviews={() => navigate('review')}
-          onConfigure={() => navigate('mapping')}
           onScheduling={() => navigate('settings')}
           onRetry={refresh}
         />

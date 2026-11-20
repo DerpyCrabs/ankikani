@@ -12,6 +12,11 @@ import {
   submissionDecision,
 } from '../src/lib/answers'
 
+it('preserves long dictionary definitions with many parenthetical clauses', () => {
+  const definition = Array.from({ length: 32 }, (_, i) => `sense (example ${i})`).join(' ')
+  expect(englishAnswerVariants(definition)).toEqual([definition])
+})
+
 describe('German answer parsing', () => {
   it('requires the declared noun article and ignores plural metadata', () => {
     expect(checkAnswer('die Ansage', 'die Ansage, -n', 'german').correct).toBe(

@@ -277,6 +277,21 @@ describe('study-card adapters', () => {
     })
   })
 
+  it('uses the card ordinal and preserves hints in localized untyped cloze templates', () => {
+    const sample = card('Respuesta anidada', 1, {
+      Texto: '{{c1::Hidrógeno::Nombre}}, {{c2::H::Símbolo}}, {{c2::±1::Valencia}}',
+      'Reverso Extra': 'elemento',
+    })
+    const config = configFor(sample, 1, {
+      Tarjeta: { Front: '{{cloze:Texto}}', Back: '{{cloze:Texto}}<br>{{Reverso Extra}}' },
+    })
+    expect(adaptCard(sample, config)).toMatchObject({
+      contentKind: 'cloze',
+      prompt: 'Hidrógeno, [Símbolo], [Valencia]',
+      canonicalAnswer: 'H · ±1',
+    })
+  })
+
   it('understands conditional, filtered, and typed cloze templates', () => {
     const sample = card('Flexible cloze', 0, {
       Text: 'Ich {{c1::bin}} hier.',

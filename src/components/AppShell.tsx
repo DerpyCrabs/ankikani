@@ -1,8 +1,9 @@
+import { Choice } from './Choice'
 import BookOpen from '@effectweb/lucide/icons/book-open'
 import CircleAlert from '@effectweb/lucide/icons/circle-alert'
 import LoaderCircle from '@effectweb/lucide/icons/loader-circle'
 import RefreshCw from '@effectweb/lucide/icons/refresh-cw'
-import { list, view } from 'effectweb'
+import { view } from 'effectweb'
 import type { DeckSummary } from '../lib/domain'
 import { CollectionImportView } from './CollectionImport'
 
@@ -27,24 +28,10 @@ export const Header = view<{
         </span>
       </button>
 
-      <label class="relative min-w-0 max-w-[380px] flex-1 sm:flex-initial">
+      <label class="relative min-w-0 max-w-[380px] flex-1 sm:min-w-72 sm:flex-initial">
         <span class="sr-only">Active deck</span>
-        <select
-          class="h-11 w-full appearance-none truncate rounded-xl border border-black/10 bg-white py-2 pl-4 pr-10 text-sm font-bold shadow-sm outline-none transition focus:border-[var(--violet)] focus:ring-3 focus:ring-[color:var(--violet)]/15 sm:min-w-72"
-          value={props.selected}
-          onChange={(event) => props.onSelect(event.currentTarget.value)}
-        >
-          {list(
-            props.decks,
-            (deck) => deck.name,
-            (deck) => (
-              <option value={deck.name}>
-                {deck.name}
-                {deck.subdeckCount ? ` (+${deck.subdeckCount} subdecks)` : ''}
-              </option>
-            ),
-          )}
-        </select>
+        <Choice label="Active deck" value={props.selected} onChoose={props.onSelect}
+          options={props.decks.map(deck => ({ value: deck.name, label: deck.name + (deck.subdeckCount ? ` (+${deck.subdeckCount} subdecks)` : '') }))} />
       </label>
     </div>
   </header>

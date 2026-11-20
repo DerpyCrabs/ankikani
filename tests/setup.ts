@@ -28,6 +28,8 @@ if (typeof window !== 'undefined') {
     unobserve() {}
     disconnect() {}
   }
+  window.HTMLElement.prototype.showPopover ??= function () { this.style.display = "block" }
+  window.HTMLElement.prototype.hidePopover ??= function () { this.style.display = "none" }
   const dialog = window.HTMLDialogElement.prototype
   dialog.showModal ??= function () { this.open = true }
   dialog.close ??= function () { this.open = false }
