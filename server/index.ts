@@ -21,6 +21,9 @@ import type { SchedulingSettings } from '../src/lib/domain'
 import { importPackageBytes } from './package-import'
 import { listCollectionBackups, restoreCollectionBackup } from './collection-import'
 
+const MAX_PACKAGE_BYTES = 1024 ** 3
+// Multipart headers and boundaries are part of the request, outside the uploaded file.
+const MAX_IMPORT_REQUEST_BYTES = MAX_PACKAGE_BYTES + 1024 ** 2
 const PORT = Number(process.env.PORT ?? 3001)
 const DIST = fileURLToPath(new URL('../dist', import.meta.url))
 
@@ -81,13 +84,13 @@ const api = Effect.fn('handleApiRequest')(function* (request: Request, url: URL)
   }
   if (url.pathname === '/api/import' && request.method === 'POST') {
     const length = Number(request.headers.get('content-length') ?? 0)
-    if (length > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
+    if (length > MAX_IMPORT_REQUEST_BYTES) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
     const form = yield* fromIO(() => request.formData())
     const upload = form.get('package')
     if (!(upload instanceof File)) return json({ error: 'Missing package file.' }, 400)
     const extension = upload.name.toLowerCase().endsWith('.colpkg') ? 'colpkg' : upload.name.toLowerCase().endsWith('.apkg') ? 'apkg' : null
     if (!extension) return json({ error: 'Choose an .apkg or .colpkg file.' }, 400)
-    if (upload.size > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
+    if (upload.size > MAX_PACKAGE_BYTES) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
     const bytes = yield* fromIO(() => upload.arrayBuffer())
     return json(yield* fromIO(() => importPackageBytes(new Uint8Array(bytes), upload.name, extension)))
   }
@@ -190,6 +193,7 @@ function startProductionServer() {
   const server = Bun.serve({
     hostname: '0.0.0.0',
     port: PORT,
+    maxRequestBodySize: MAX_IMPORT_REQUEST_BYTES,
     async fetch(request) {
       const url = new URL(request.url)
       return (await handleApiRequest(request)) ?? serveStatic(url)
