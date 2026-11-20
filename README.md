@@ -4,16 +4,18 @@ Local typed-recall study app for imported Anki vocabulary decks. AnkiKani owns
 its collection, review history, media, and FSRS schedule in `data/ankikani.sqlite`.
 It keeps the focused `Again`/`Good` flow and does not manage or edit card content.
 
-![Dashboard](docs/screenshots/dashboard.jpg)
+![Goethe A1 dashboard with lessons, reviews, and study activity](docs/screenshots/dashboard.jpg)
 
-![Correct review](docs/screenshots/review.jpg)
+![Accepted German answer with audio replay and a bilingual example](docs/screenshots/review.jpg)
+
+![Deck settings with daily limits, optional RWKV review ordering, and collapsed advanced settings](docs/screenshots/settings.jpg)
 
 ## Deck support
 
 AnkiKani detects note types inside a deck and its subdecks. It supports plain
 Front/Back cards, German vocabulary, cloze sentences, audio prompts, images,
 and multi-part answers such as irregular verb forms. Review detected fields in
-**Fields** when a deck uses an unfamiliar schema.
+**Deck settings → Advanced settings → Card fields and templates** when a deck uses an unfamiliar schema.
 
 ## First migration
 
@@ -52,3 +54,7 @@ bun start
 
 Open the Scheduling screen to change daily limits, learning and relearning
 steps, desired retention, maximum interval, sibling burying, and leech threshold.
+
+### RWKV-Instant review order
+
+Run `bun run rwkv:setup` once with Git and uv installed to enable local ranking. Opening a review session starts a background refresh at most once per hour. Due review cards with a current prediction are ordered by recall probability, lowest first. FSRS continues to schedule intervals. Inference uses CUDA when available and otherwise runs on CPU.
