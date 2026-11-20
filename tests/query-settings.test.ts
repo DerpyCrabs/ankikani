@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { createAppQueryClient, mutations, queries } from '../src/lib/query'
+import { queryCache } from '@effectweb/query'
+import { Effect } from 'effect'
+import { deckSettings, saveDeckSettings } from '../src/lib/resources'
 import type { SchedulingSettings } from '../src/lib/domain'
 
 afterEach(() => {
@@ -24,18 +26,16 @@ it('reopens settings with the saved values inside the query freshness window', a
     }
     throw new Error(`Unexpected request: ${init?.method ?? 'GET'} ${String(url)}`)
   })
-  const client = createAppQueryClient()
+  const client = queryCache()
   try {
-    const original = await client.fetchQuery(queries.settings('German'))
+    const original = await Effect.runPromise(client.prefetch(deckSettings, 'German'))
     expect(original.reviewsPerDay).toBe(200)
     const saved = { ...original, reviewsPerDay: 50 }
-    // Execute through the real mutation cache so onSuccess runs as it does in the form.
-    const mutation = client.getMutationCache().build(client, mutations.updateSettings(client, 'German'))
-    await mutation.execute(saved)
+    await Effect.runPromise(saveDeckSettings(client, 'German', saved))
     expect(serverSettings.reviewsPerDay).toBe(50)
-    const reopened = await client.fetchQuery(queries.settings('German'))
+    const reopened = await Effect.runPromise(client.prefetch(deckSettings, 'German'))
     expect(reopened).toEqual(saved)
   } finally {
-    client.clear()
+    client.dispose()
   }
 })

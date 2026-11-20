@@ -1,22 +1,15 @@
+import { Effect } from 'effect'
 import { api } from './api'
 import type { StudyCard, StudyConfig } from './domain'
 
-export async function loadCards(
+export const loadCards = Effect.fn('loadCards')(function* (
   deckName: string,
   cardIds: number[],
   configuration: StudyConfig,
-  signal?:AbortSignal,
-): Promise<StudyCard[]> {
+) {
   const cards: StudyCard[] = []
   for (let offset = 0; offset < cardIds.length; offset += 500) {
-    cards.push(
-      ...(await api.cards(
-        deckName,
-        cardIds.slice(offset, offset + 500),
-        configuration,
-        signal,
-      )),
-    )
+    cards.push(...(yield* api.cards(deckName, cardIds.slice(offset, offset + 500), configuration)))
   }
   return cards
-}
+})

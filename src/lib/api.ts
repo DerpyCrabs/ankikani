@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import type {
   DashboardData,
   DeckProfile,
@@ -21,52 +22,43 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit, timeoutMs = 8_000): Promise<T> {
-  const controller = new AbortController()
-  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort(), timeoutMs) : undefined
-  let response: Response
-  try {
-    response = await fetch(path, {
-      ...init,
-      signal: init?.signal ?? controller.signal,
-    })
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError('The request did not finish in time.', 'TIMEOUT', 408)
+const timeoutError = () => new ApiError('The request did not finish in time.', 'TIMEOUT', 408)
+
+function request<T>(path: string, init?: RequestInit, timeoutMs = 8_000): Effect.Effect<T, Error> {
+  const fetchResponse = Effect.tryPromise({
+    try: (signal) => fetch(path, { ...init, signal }),
+    catch: (cause) =>
+      cause instanceof Error && cause.name === 'AbortError'
+        ? timeoutError()
+        : new ApiError('The connection was interrupted.', 'NETWORK'),
+  })
+  const response =
+    timeoutMs > 0
+      ? Effect.timeoutOrElse(fetchResponse, {
+          duration: timeoutMs,
+          orElse: () => Effect.fail(timeoutError()),
+        })
+      : fetchResponse
+
+  return Effect.gen(function* () {
+    const result = yield* response
+    const isJson = result.headers.get('content-type')?.includes('application/json')
+    const body = isJson
+      ? yield* Effect.tryPromise({
+          try: () => result.json() as Promise<T & { error?: string; code?: string }>,
+          catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+        })
+      : null
+    if (!result.ok) {
+      return yield* Effect.fail(
+        new ApiError(body?.error ?? `Request failed (${result.status}).`, body?.code, result.status),
+      )
     }
-    throw new ApiError('The connection was interrupted.', 'NETWORK')
-  } finally {
-    if (timeout) globalThis.clearTimeout(timeout)
-  }
-  const contentType = response.headers.get('content-type') ?? ''
-  const body = contentType.includes('application/json')
-    ? ((await response.json()) as { error?: string; code?: string } & T)
-    : null
-
-  if (!response.ok) {
-    throw new ApiError(
-      body?.error ?? `Request failed (${response.status}).`,
-      body?.code,
-      response.status,
-    )
-  }
-  return body as T
-}
-
-function post<T>(path: string, body: unknown, signal?:AbortSignal) {
-  return request<T>(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
+    return body as T
   })
 }
 
-function get<T>(path: string, signal?:AbortSignal) {
-  return request<T>(path,{signal})
-}
-
-function answerPost<T>(path: string, body: unknown) {
+function post<T>(path: string, body: unknown) {
   return request<T>(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -74,23 +66,33 @@ function answerPost<T>(path: string, body: unknown) {
   })
 }
 
-export type PackageImportReport = {file:string;kind:'apkg'|'colpkg';decks:number;notes:number;cards:number;reviews:number;media:number;compatibility:Array<{modelName:string;status:string;reason:string}>;backup:string|null}
+function get<T>(path: string) {
+  return request<T>(path)
+}
+
+export type PackageImportReport = {
+  file: string
+  kind: 'apkg' | 'colpkg'
+  decks: number
+  notes: number
+  cards: number
+  reviews: number
+  media: number
+  compatibility: Array<{ modelName: string; status: string; reason: string }>
+  backup: string | null
+}
 
 export const api = {
-  health: (signal?:AbortSignal) =>
+  health: () =>
     get<{
       connected: boolean
       version: number
       endpoint: string
       profileName: string
-    }>(
-      '/api/health', signal,
-    ),
-  decks: (signal?:AbortSignal) => get<DeckSummary[]>('/api/decks',signal),
-  profile: (deck: string, signal?:AbortSignal) =>
-    get<DeckProfile>(`/api/profile?deck=${encodeURIComponent(deck)}`,signal),
-  settings: (deck: string, signal?:AbortSignal) =>
-    get<SchedulingSettings>(`/api/settings?deck=${encodeURIComponent(deck)}`,signal),
+    }>('/api/health'),
+  decks: () => get<DeckSummary[]>('/api/decks'),
+  profile: (deck: string) => get<DeckProfile>(`/api/profile?deck=${encodeURIComponent(deck)}`),
+  settings: (deck: string) => get<SchedulingSettings>(`/api/settings?deck=${encodeURIComponent(deck)}`),
   updateSettings: (deck: string, settings: SchedulingSettings) =>
     request<SchedulingSettings>('/api/settings', {
       method: 'PUT',
@@ -100,22 +102,28 @@ export const api = {
   importPackage: (file: File) => {
     const form = new FormData()
     form.set('package', file)
-    return request<PackageImportReport>('/api/import',{method:'POST',body:form},0)
+    return request<PackageImportReport>('/api/import', { method: 'POST', body: form }, 0)
   },
-  backups: (signal?:AbortSignal) => get<string[]>('/api/backups',signal),
-  restoreBackup: (name:string) => request<{backup:string|null}>('/api/backups/restore',{
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name}),
-  },0),
-  dashboard: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
-    post<DashboardData>('/api/dashboard', { deck, config },signal),
-  reviews: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
-    post<SessionPayload>('/api/sessions/reviews', { deck, config },signal),
-  lessons: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
-    post<LessonPayload>('/api/sessions/lessons', { deck, config },signal),
-  cards: (deck: string, cardIds: number[], config: StudyConfig, signal?:AbortSignal) =>
-    post<StudyCard[]>('/api/cards', { deck, cardIds, config },signal),
+  backups: () => get<string[]>('/api/backups'),
+  restoreBackup: (name: string) =>
+    request<{ backup: string | null }>(
+      '/api/backups/restore',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      },
+      0,
+    ),
+  dashboard: (deck: string, config: StudyConfig) => post<DashboardData>('/api/dashboard', { deck, config }),
+  reviews: (deck: string, config: StudyConfig) =>
+    post<SessionPayload>('/api/sessions/reviews', { deck, config }),
+  lessons: (deck: string, config: StudyConfig) =>
+    post<LessonPayload>('/api/sessions/lessons', { deck, config }),
+  cards: (deck: string, cardIds: number[], config: StudyConfig) =>
+    post<StudyCard[]>('/api/cards', { deck, cardIds, config }),
   answer: (cardId: number, ease: 1 | 3, requestId: string) =>
-    answerPost<{
+    post<{
       saved: boolean
       stale?: true
       cardId: number
@@ -125,6 +133,5 @@ export const api = {
       ease,
       requestId,
     }),
-  mediaUrl: (filename: string) =>
-    `/api/media?filename=${encodeURIComponent(filename)}`,
+  mediaUrl: (filename: string) => `/api/media?filename=${encodeURIComponent(filename)}`,
 }

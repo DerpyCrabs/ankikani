@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { fireEvent, screen, waitFor } from '@testing-library/dom'
+import { Effect } from 'effect'
+import { mount, type Mounted } from 'effectweb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   DashboardData,
@@ -24,15 +26,24 @@ const mocks = vi.hoisted(() => ({
   updateSettings: vi.fn(),
 }))
 
-vi.mock('../src/lib/api', () => ({
+vi.mock('../src/lib/api', async (original) => ({
+  ...await original<typeof import('../src/lib/api')>(),
   api: {
-    ...mocks,
+    ...Object.fromEntries(Object.entries(mocks).map(([key, mock]) => [
+      key, (...args: unknown[]) => Effect.tryPromise({ try: () => mock(...args), catch: cause => cause }),
+    ])),
     mediaUrl: (filename: string) => `/api/media?filename=${filename}`,
   },
 }))
 
 import App from '../src/App'
 import { deckStorageId, profileKey, sessionStorageKey } from '../src/lib/storage'
+
+let mounted: Mounted | undefined
+function renderApp() {
+  const root = document.body.appendChild(document.createElement('div'))
+  mounted = mount(root, App, {})
+}
 
 const mapping: FieldMapping = {
   modelName: 'Goethe Vocab List',
@@ -169,13 +180,14 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  cleanup()
+  mounted?.dispose()
+  document.body.replaceChildren()
   vi.restoreAllMocks()
 })
 
 describe('application integration', () => {
   it('loads and saves scheduling settings through query mutations', async () => {
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
     const daily=await screen.findByRole('spinbutton',{name:'New cards per day'})
     fireEvent.input(daily,{target:{value:'12'}})
@@ -187,7 +199,7 @@ describe('application integration', () => {
   it('imports a package and displays the validation report', async () => {
     mocks.importPackage.mockResolvedValue({file:'deck.apkg',kind:'apkg',decks:1,notes:2,cards:4,reviews:7,media:3,compatibility:[],backup:'/tmp/backup.sqlite'})
     vi.spyOn(window,'confirm').mockReturnValue(true)
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
     const file=new File(['fixture'],'deck.apkg',{type:'application/octet-stream'})
     fireEvent.change(await screen.findByLabelText('Anki package'),{target:{files:[file]}})
@@ -200,7 +212,7 @@ describe('application integration', () => {
     mocks.backups.mockResolvedValue(['ankikani-before-import-test.sqlite'])
     mocks.restoreBackup.mockRejectedValue(new Error('Backup is damaged'))
     vi.spyOn(window,'confirm').mockReturnValue(true)
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
     fireEvent.click(await screen.findByRole('button',{name:'Restore'}))
     expect((await screen.findByRole('alert')).textContent).toContain('Backup is damaged')
@@ -209,7 +221,7 @@ describe('application integration', () => {
 
   it('restores and updates active deck selection through localStorage', async () => {
     localStorage.setItem('ankikani.activeDeck', 'German')
-    render(() => <App />)
+    renderApp()
 
     const selector = await screen.findByRole('combobox', { name: 'Active deck' })
     expect((selector as HTMLSelectElement).value).toBe('German')
@@ -236,10 +248,10 @@ describe('application integration', () => {
     localStorage.setItem(profileKey('First profile'), 'German')
     localStorage.setItem(profileKey('Second profile'), 'Default')
 
-    render(() => <App />)
+    renderApp()
     const selector = await screen.findByRole('combobox', { name: 'Active deck' })
     expect((selector as HTMLSelectElement).value).toBe('German')
-    await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German',expect.any(AbortSignal)))
+    await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German'))
     await screen.findByRole('heading', { name: 'Lessons' })
     mocks.health.mockClear()
 
@@ -254,11 +266,11 @@ describe('application integration', () => {
 
     await waitFor(() => {
       expect(mocks.health).toHaveBeenCalledTimes(1)
-      expect(mocks.profile).toHaveBeenCalledWith('Default',expect.any(AbortSignal))
+      expect(mocks.profile).toHaveBeenCalledWith('Default')
       expect((selector as HTMLSelectElement).value).toBe('Default')
     })
     await screen.findByText('Nothing to study here yet')
-    expect(mocks.profile).toHaveBeenCalledWith('Default',expect.any(AbortSignal))
+    expect(mocks.profile).toHaveBeenCalledWith('Default')
   })
 
   it('leaves an active session when the Anki profile changes', async () => {
@@ -276,7 +288,7 @@ describe('application integration', () => {
       cards: [reviewCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     await screen.findByRole('heading', { name: reviewCard.prompt })
     expect(window.location.pathname).toBe('/reviews')
@@ -297,7 +309,7 @@ describe('application integration', () => {
       ),
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(
       await screen.findByRole('button', { name: /Day 1.*501/ }),
     )
@@ -305,6 +317,9 @@ describe('application integration', () => {
     await waitFor(() => expect(mocks.cards).toHaveBeenCalledTimes(2))
     expect(mocks.cards.mock.calls[0]?.[1]).toHaveLength(500)
     expect(mocks.cards.mock.calls[1]?.[1]).toHaveLength(1)
+    expect(screen.getByRole('dialog', { name: /Day 1.*501 scheduled/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
   it('shows field mapping for an unsupported note schema', async () => {
@@ -322,7 +337,7 @@ describe('application integration', () => {
       suggestedMapping: null,
     })
 
-    render(() => <App />)
+    renderApp()
     await screen.findByRole('heading', { name: 'Deck setup' })
     expect(screen.getByText('Prompt')).toBeTruthy()
     expect(screen.getByText('Answer')).toBeTruthy()
@@ -338,7 +353,7 @@ describe('application integration', () => {
         profileName: 'Test',
       })
 
-    render(() => <App />)
+    renderApp()
     expect(await screen.findByRole('heading', { name: 'Import your Anki collection' })).toBeTruthy()
     expect(screen.getByLabelText(/package/i, { selector: 'input' })).toBeTruthy()
     const retry = await screen.findByRole('button', { name: 'Retry connection' })
@@ -372,7 +387,7 @@ describe('application integration', () => {
     mocks.cards.mockResolvedValue([reviewCard])
     window.history.replaceState({}, '', '/reviews')
 
-    render(() => <App />)
+    renderApp()
     await screen.findByRole('button', { name: 'Continue' })
     expect(mocks.dashboard).not.toHaveBeenCalled()
     expect(window.location.pathname).toBe('/reviews')
@@ -384,7 +399,7 @@ describe('application integration', () => {
     expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
     expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
-    expect(mocks.cards).toHaveBeenCalledWith('German', [reviewCard.cardId], expect.anything(), expect.any(AbortSignal))
+    expect(mocks.cards).toHaveBeenCalledWith('German', [reviewCard.cardId], expect.anything())
     await waitFor(() => {
       expect(localStorage.getItem(storage)).toContain('"audioFilename":"ansage.mp3"')
       expect(localStorage.getItem(storage)).not.toContain('stale-profile-audio.mp3')
@@ -418,7 +433,7 @@ describe('application integration', () => {
     )
     window.history.replaceState({}, '', '/reviews')
 
-    render(() => <App />)
+    renderApp()
     await screen.findByRole('button', { name: 'Check answer' })
     expect(mocks.cards).toHaveBeenCalledTimes(2)
     expect(mocks.cards.mock.calls[0]?.[1]).toHaveLength(500)
@@ -447,7 +462,7 @@ describe('application integration', () => {
     mocks.cards.mockResolvedValue([reviewCard])
     window.history.replaceState({}, '', '/reviews')
 
-    render(() => <App />)
+    renderApp()
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, {
       target: { value: reviewCard.canonicalAnswer },
@@ -490,7 +505,7 @@ describe('application integration', () => {
     mocks.cards.mockResolvedValue([englishCard])
     window.history.replaceState({}, '', '/reviews')
 
-    render(() => <App />)
+    renderApp()
     await screen.findByRole('button', { name: 'Continue' })
     const expectedAnswer = screen.getByText('die hard')
     expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
@@ -510,7 +525,7 @@ describe('application integration', () => {
       cards: [reviewCard, nextCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
@@ -539,7 +554,7 @@ describe('application integration', () => {
       cards: [reviewCard, nextCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
@@ -587,7 +602,7 @@ describe('application integration', () => {
       cards: [reviewCard, nextCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
@@ -623,7 +638,7 @@ describe('application integration', () => {
       }],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
@@ -652,7 +667,7 @@ describe('application integration', () => {
       }],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: 'wrong' } })
@@ -677,7 +692,7 @@ describe('application integration', () => {
       }],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     const shortcuts = screen.getByLabelText('Keyboard shortcuts')
@@ -703,7 +718,7 @@ describe('application integration', () => {
       }],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     expect(await screen.findByRole('button', { name: 'Play prompt' })).toBeTruthy()
     expect(screen.getByLabelText('Keyboard shortcuts').textContent).toContain(
@@ -723,7 +738,7 @@ describe('application integration', () => {
       }],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     await screen.findByRole('textbox')
     expect(screen.getByLabelText('Keyboard shortcuts').textContent).not.toContain(
@@ -749,7 +764,7 @@ describe('application integration', () => {
       ease: 3,
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })
@@ -778,7 +793,7 @@ describe('application integration', () => {
       }),
     )
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     expect(await screen.findByRole('heading', { name: reviewCard.prompt }))
       .toBeTruthy()
@@ -798,7 +813,7 @@ describe('application integration', () => {
       }),
     )
 
-    render(() => <App />)
+    renderApp()
     await screen.findByRole('heading', { name: 'Lessons' })
     expect(window.location.pathname).toBe('/')
     expect(screen.queryByText('Expected answer')).toBeNull()
@@ -825,7 +840,7 @@ describe('application integration', () => {
       quizCards: [reviewCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     await screen.findByText(reviewCard.prompt)
     expect(window.location.pathname).toBe('/reviews')
@@ -857,7 +872,7 @@ describe('application integration', () => {
       cards: [reviewCard],
     })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     await screen.findByRole('heading', { name: reviewCard.prompt })
     expect(window.location.pathname).toBe('/reviews')
@@ -875,9 +890,10 @@ describe('application integration', () => {
       .mockRejectedValueOnce(new Error('AnkiConnect connection was interrupted.'))
       .mockResolvedValueOnce({ deckName: 'German', cards: [reviewCard] })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     expect(await screen.findByText('Could not start session')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('AnkiConnect connection was interrupted.')
     expect(window.location.pathname).toBe('/reviews')
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -891,7 +907,7 @@ describe('application integration', () => {
       .mockRejectedValueOnce(new Error('AnkiConnect connection was interrupted.'))
       .mockResolvedValueOnce({ saved: true, cardId: reviewCard.cardId, ease: 3 })
 
-    render(() => <App />)
+    renderApp()
     fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
     const input = await screen.findByRole('textbox')
     fireEvent.input(input, { target: { value: reviewCard.canonicalAnswer } })

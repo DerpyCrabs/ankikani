@@ -1,25 +1,35 @@
-import Check from 'lucide-solid/icons/check'
-import ChevronRight from 'lucide-solid/icons/chevron-right'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import Sparkles from 'lucide-solid/icons/sparkles'
-import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import Check from '@effectweb/lucide/icons/check'
+import ChevronRight from '@effectweb/lucide/icons/chevron-right'
+import CircleAlert from '@effectweb/lucide/icons/circle-alert'
+import LoaderCircle from '@effectweb/lucide/icons/loader-circle'
+import Sparkles from '@effectweb/lucide/icons/sparkles'
+import {
+  available,
+  component,
+  domBinding,
+  domMount,
+  list,
+  observe,
+  resourceError,
+  view,
+  type JSX,
+} from 'effectweb'
+import { type QueryCache, querySource } from '@effectweb/query'
+import { Effect } from 'effect'
 import { matchesAnswerPart, splitGermanArticle, type GermanGenderArticle } from '../lib/answers'
 import { api } from '../lib/api'
 import { sessionStorageKey } from '../lib/storage'
 import type { AnswerLanguage, AnswerPart, LessonItem, StudyCard, StudyConfig } from '../lib/domain'
-import { AudioButton, AudioShortcut, playAudioSequence, stopAudioPlayback } from './StudyAudio'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/solid-query'
-import { mutations, queries } from '../lib/query'
+import { AudioButton, AudioShortcut } from './StudyAudio'
+import { playAudioSequence, stopAudioPlayback } from './playback'
+import { lessonQueue, reviewQueue, scheduledCards } from '../lib/resources'
 
 type StudyPhase = 'answering' | 'correction' | 'retrying' | 'feedback'
 
 function promptAudioFiles(card: StudyCard) {
   return card.promptAudioFilenames?.length
     ? card.promptAudioFilenames
-    : [card.promptAudioFilename].filter(
-        (value): value is string => Boolean(value),
-      )
+    : [card.promptAudioFilename].filter((value): value is string => Boolean(value))
 }
 
 function answerAudioFiles(card: StudyCard) {
@@ -47,25 +57,14 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
     if (
       !Number.isInteger(candidate.index) ||
       (candidate.index ?? -1) < 0 ||
-      !['answering', 'correction', 'retrying', 'feedback'].includes(
-        candidate.phase ?? '',
-      ) ||
+      !['answering', 'correction', 'retrying', 'feedback'].includes(candidate.phase ?? '') ||
       !['correct', 'incorrect', null].includes(candidate.result ?? null) ||
       (candidate.inputs !== undefined &&
-        (
-          !Array.isArray(candidate.inputs) ||
-          !candidate.inputs.every((input) => typeof input === 'string')
-        )) ||
+        (!Array.isArray(candidate.inputs) ||
+          !candidate.inputs.every((input) => typeof input === 'string'))) ||
       (candidate.cards !== undefined &&
-        (
-          !Array.isArray(candidate.cards) ||
-          !candidate.cards.every(
-            (card) =>
-              card &&
-              typeof card === 'object' &&
-              Number.isFinite(card.cardId),
-          )
-        ))
+        (!Array.isArray(candidate.cards) ||
+          !candidate.cards.every((card) => card && typeof card === 'object' && Number.isFinite(card.cardId))))
     ) {
       return null
     }
@@ -75,10 +74,7 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
       input: typeof candidate.input === 'string' ? candidate.input : '',
       inputs: candidate.inputs,
       result: candidate.result ?? null,
-      gradeRequestId:
-        typeof candidate.gradeRequestId === 'string'
-          ? candidate.gradeRequestId
-          : '',
+      gradeRequestId: typeof candidate.gradeRequestId === 'string' ? candidate.gradeRequestId : '',
       correctionUnlocked: candidate.correctionUnlocked === true,
       cards: candidate.cards,
     }
@@ -87,22 +83,20 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
   }
 }
 
-export function LessonSession(props: {
+type SessionProps = {
+  cache: QueryCache
   deckName: string
   storageId: string
   configuration: StudyConfig
   onExit: () => void
-}) {
-  const payload = useQuery(() => queries.lessons(props.deckName,props.configuration))
-  const teachingStorage = sessionStorageKey(
-    props.storageId,
-    'lesson-teaching',
-  )
+  onGraded: () => void
+}
+
+function initialLesson(props: SessionProps) {
+  const teachingStorage = sessionStorageKey(props.storageId, 'lesson-teaching')
   const restored = (() => {
     try {
-      const value = JSON.parse(
-        localStorage.getItem(teachingStorage) ?? 'null',
-      ) as {
+      const value = JSON.parse(localStorage.getItem(teachingStorage) ?? 'null') as {
         teachingIndex: number
         quizzing: boolean
       } | null
@@ -116,178 +110,157 @@ export function LessonSession(props: {
       return null
     }
   })()
-  const [teachingIndex, setTeachingIndex] = createSignal(restored?.teachingIndex ?? 0)
-  const [quizzing, setQuizzing] = createSignal(restored?.quizzing ?? false)
-
-  createEffect(() => {
-    localStorage.setItem(
-      teachingStorage,
-      JSON.stringify({
-        teachingIndex: teachingIndex(),
-        quizzing: quizzing(),
-      }),
-    )
-  })
-
-  function completeLesson() {
-    localStorage.removeItem(teachingStorage)
-    props.onExit()
+  return {
+    teachingStorage,
+    teachingIndex: restored?.teachingIndex ?? 0,
+    quizzing: restored?.quizzing ?? false,
   }
+}
 
-  createEffect(() => {
-    const lesson = payload.data
-    if (!payload.isPending && lesson && lesson.items.length === 0) {
-      localStorage.removeItem(teachingStorage)
-      localStorage.removeItem(sessionStorageKey(props.storageId, 'lesson'))
-      props.onExit()
-    } else if (
-      !payload.isPending &&
-      lesson &&
-      !quizzing() &&
-      teachingIndex() >= lesson.items.length
-    ) {
-      setTeachingIndex(0)
+export const LessonSession = component(
+  { init: initialLesson, identity: (props) => props.storageId },
+  (owner) => {
+    const persist = (teachingIndex: number, quizzing: boolean) => {
+      localStorage.setItem(owner.read().teachingStorage, JSON.stringify({ teachingIndex, quizzing }))
+      owner.patch({ teachingIndex, quizzing })
     }
-  })
-
-  return (
-    <Show
-      when={!payload.isPending && payload.data}
-      fallback={<SessionLoading title="Preparing lessons" onExit={props.onExit} error={payload.error} retry={() => void payload.refetch()} />}
-    >
-      {(lesson) => (
-        <Show
-          when={lesson().items.length}
-          fallback={<SessionEmpty title="No lessons available" copy="Anki's new-card limit has no complete word pairs available right now." onExit={props.onExit} />}
-        >
-          <Show
-            when={quizzing()}
-            fallback={
-              <LessonTeaching
-                item={
-                  lesson().items[
-                    Math.min(teachingIndex(), lesson().items.length - 1)
-                  ]!
-                }
-                index={Math.min(teachingIndex(), lesson().items.length - 1)}
-                total={lesson().items.length}
-                onNext={() => {
-                  if (teachingIndex() + 1 >= lesson().items.length) setQuizzing(true)
-                  else setTeachingIndex((index) => index + 1)
-                }}
-              />
-            }
-          >
-            <StudyRunner
-            mode="lesson"
-            deckName={props.deckName}
-            storageId={props.storageId}
-              configuration={props.configuration}
-              cards={lesson().quizCards}
+    return view(({ props, teachingStorage, teachingIndex, quizzing }) => {
+      const cache = props.cache
+      const args = { deck: props.deckName, config: props.configuration }
+      return observe(querySource(cache, lessonQueue, args), (result) => {
+        const lesson = available(result)
+        if (!lesson)
+          return (
+            <SessionLoading
+              title="Preparing lessons"
               onExit={props.onExit}
-              onComplete={completeLesson}
+              error={resourceError(result)}
+              retry={() => cache.invalidateQuery(lessonQueue, args)}
             />
-          </Show>
-        </Show>
-      )}
-    </Show>
-  )
-}
-
-export function ReviewSession(props: {
-  deckName: string
-  storageId: string
-  configuration: StudyConfig
-  onExit: () => void
-}) {
-  const payload = useQuery(() => queries.reviews(props.deckName,props.configuration))
-  return (
-    <Show
-      when={!payload.isPending && payload.data}
-      fallback={<SessionLoading title="Building review queue" onExit={props.onExit} error={payload.error} retry={() => void payload.refetch()} />}
-    >
-      {(session) => (
-        <Show
-          when={session().cards.length}
-          fallback={<SessionEmpty title="Reviews cleared" copy="Nothing is due in this deck right now." onExit={props.onExit} />}
-        >
-          <StudyRunner
-            mode="review"
-            deckName={props.deckName}
-            storageId={props.storageId}
-            configuration={props.configuration}
-            cards={session().cards}
-            onExit={props.onExit}
+          )
+        const complete = () => {
+          localStorage.removeItem(teachingStorage)
+          props.onExit()
+        }
+        if (!lesson.items.length) {
+          return (
+            <section
+              use={domMount(() => {
+                localStorage.removeItem(sessionStorageKey(props.storageId, 'lesson'))
+                queueMicrotask(() => {
+                  if (!owner.disposed) complete()
+                })
+              })}
+            >
+              <SessionEmpty
+                title="No lessons available"
+                copy="Anki's new-card limit has no complete word pairs available right now."
+                onExit={props.onExit}
+              />
+            </section>
+          )
+        }
+        if (quizzing)
+          return <StudyRunner {...props} mode="lesson" cards={lesson.quizCards} onComplete={complete} />
+        const index = teachingIndex < lesson.items.length ? teachingIndex : 0
+        return (
+          <LessonTeaching
+            item={lesson.items[index]}
+            index={index}
+            total={lesson.items.length}
+            onNext={() =>
+              index + 1 >= lesson.items.length ? persist(index, true) : persist(index + 1, false)
+            }
           />
-        </Show>
-      )}
-    </Show>
-  )
+        )
+      })
+    })
+  },
+)
+
+export const ReviewSession = view<SessionProps>((props) => {
+  const cache = props.cache
+  const args = { deck: props.deckName, config: props.configuration }
+  return observe(querySource(cache, reviewQueue, args), (result) => {
+    const session = available(result)
+    if (!session)
+      return (
+        <SessionLoading
+          title="Building review queue"
+          onExit={props.onExit}
+          error={resourceError(result)}
+          retry={() => cache.invalidateQuery(reviewQueue, args)}
+        />
+      )
+    if (!session.cards.length)
+      return (
+        <SessionEmpty
+          title="Reviews cleared"
+          copy="Nothing is due in this deck right now."
+          onExit={props.onExit}
+        />
+      )
+    return <StudyRunner {...props} mode="review" cards={session.cards} />
+  })
+})
+
+function teachKeys(_element: HTMLElement, next: () => () => void) {
+  const onKeyDown = (event: KeyboardEvent) => {
+    const target = event.target as HTMLElement | null
+    if (event.key === 'Enter' && !target?.matches('input, textarea, select, button')) {
+      event.preventDefault()
+      next()()
+    }
+  }
+  window.addEventListener('keydown', onKeyDown)
+  return {
+    dispose: () => {
+      window.removeEventListener('keydown', onKeyDown)
+      stopAudioPlayback()
+    },
+  }
 }
 
-function LessonTeaching(props: {
+const LessonTeaching = view<{
   item: LessonItem
   index: number
   total: number
   onNext: () => void
-}) {
+}>((props) => {
   const nextLesson = () => {
     stopAudioPlayback()
     props.onNext()
   }
-  onMount(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (
-        event.key === 'Enter' &&
-        !target?.matches('input, textarea, select, button')
-      ) {
-        event.preventDefault()
-        nextLesson()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    onCleanup(() => {
-      window.removeEventListener('keydown', onKeyDown)
-      stopAudioPlayback()
-    })
-  })
   const card = () => props.item.cards[0]
   const audioFiles = () =>
     props.item.promptAudioFilenames?.length
       ? props.item.promptAudioFilenames
       : props.item.audioFilenames?.length
         ? props.item.audioFilenames
-        : [props.item.promptAudioFilename ?? props.item.audioFilename].filter(
-            (value): value is string => Boolean(value),
+        : [props.item.promptAudioFilename ?? props.item.audioFilename].filter((value): value is string =>
+            Boolean(value),
           )
   const visibleDetails = () =>
-    (props.item.details ?? []).filter((detail) =>
-      ![
-        props.item.sourceExample,
-        props.item.targetExample,
-        props.item.note,
-        card()?.prompt,
-        card()?.canonicalAnswer,
-      ].includes(detail.value),
+    (props.item.details ?? []).filter(
+      (detail) =>
+        ![
+          props.item.sourceExample,
+          props.item.targetExample,
+          props.item.note,
+          card()?.prompt,
+          card()?.canonicalAnswer,
+        ].includes(detail.value),
     )
   return (
-    <StudyShell
-      progress={props.index + 1}
-      total={props.total}
-      audioAvailable={audioFiles().length > 0}
-    >
+    <StudyShell progress={props.index + 1} total={props.total} audioAvailable={audioFiles().length > 0}>
       <AudioShortcut filenames={audioFiles()} />
-      <article class="mx-auto w-full max-w-3xl">
+      <article use={domBinding(nextLesson, teachKeys)} class="mx-auto w-full max-w-3xl">
         <div class="mb-8 flex flex-wrap items-center justify-between gap-3">
           <span class="rounded-full bg-[var(--yellow)] px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
             New word {props.index + 1} of {props.total}
           </span>
           <div class="flex flex-wrap items-center justify-end gap-3">
-            <AudioButton
-              filenames={audioFiles()}
-              autoplay={props.item.contentKind === 'audio'}
-            />
+            <AudioButton filenames={audioFiles()} autoplay={props.item.contentKind === 'audio'} />
             <button class="button-soft-primary" onClick={nextLesson}>
               {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
               <ChevronRight class="size-4" />
@@ -296,22 +269,24 @@ function LessonTeaching(props: {
         </div>
         <div class="grid gap-4 md:grid-cols-2">
           <div class="card-shell bg-[var(--mint-soft)] p-6 sm:p-8">
-            <Show when={props.item.imageFilenames?.length}>
+            {props.item.imageFilenames?.length ? (
               <div class="mb-4 flex flex-wrap gap-3">
-                <For each={props.item.imageFilenames}>
-                  {(filename) => <img class="max-h-48 rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />}
-                </For>
+                {list(props.item.imageFilenames ?? [], (filename) => (
+                  <img class="max-h-48 rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />
+                ))}
               </div>
-            </Show>
+            ) : null}
             <h1 class="text-3xl font-black tracking-[-0.045em]">
               <GermanArticleText
                 value={card()?.prompt || props.item.sourceWord || 'Listen'}
                 language={card()?.promptLanguage}
               />
             </h1>
-            <Show when={props.item.sourceExample}>
-              <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.sourceExample}</p>
-            </Show>
+            {props.item.sourceExample ? (
+              <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">
+                {props.item.sourceExample}
+              </p>
+            ) : null}
           </div>
           <div class="card-shell bg-[var(--violet-soft)] p-6 sm:p-8">
             <h2 class="text-3xl font-black tracking-[-0.04em]">
@@ -320,509 +295,446 @@ function LessonTeaching(props: {
                 language={card()?.answerLanguage}
               />
             </h2>
-            <Show when={props.item.targetExample}>
-              <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">{props.item.targetExample}</p>
-            </Show>
-            <Show when={props.item.note}>
-              <NoteContent value={props.item.note} />
-            </Show>
-            <For each={visibleDetails()}>
-              {(detail) => (
+            {props.item.targetExample ? (
+              <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">
+                {props.item.targetExample}
+              </p>
+            ) : null}
+            {props.item.note ? <NoteContent value={props.item.note} /> : null}
+            {list(
+              visibleDetails() ?? [],
+              (item) => item.label,
+              (detail) => (
                 <p class="mt-4 text-sm leading-6 text-[var(--muted)]">
                   <strong>{humanizeField(detail.label)}:</strong> {detail.value}
                 </p>
-              )}
-            </For>
+              ),
+            )}
           </div>
         </div>
       </article>
     </StudyShell>
   )
-}
+})
 
-function StudyRunner(props: {
-  mode: 'lesson' | 'review'
-  deckName: string
-  storageId: string
-  configuration: StudyConfig
-  cards: StudyCard[]
-  onExit: () => void
-  onComplete?: () => void
-}) {
-  const queryClient = useQueryClient()
-  const grade = useMutation(() => mutations.answer(queryClient,props.deckName))
-  const partsFor = (card: StudyCard): AnswerPart[] =>
-    card.answerParts?.length
-      ? card.answerParts
-      : [{
+type RunnerProps = SessionProps & { mode: 'lesson' | 'review'; cards: StudyCard[]; onComplete?: () => void }
+
+const partsFor = (card: StudyCard): AnswerPart[] =>
+  card.answerParts?.length
+    ? card.answerParts
+    : [
+        {
           id: 'answer',
           label: 'Answer',
           canonicalAnswer: card.canonicalAnswer,
           acceptedAnswers: card.acceptedAnswers,
           language: card.direction === 'reverse' ? 'german' : 'english',
-        }]
+        },
+      ]
+function initialRunner(props: RunnerProps) {
   const storage = sessionStorageKey(props.storageId, props.mode)
   const restored = readStoredStudySession(storage)
-  const restoredCards = restored?.cards?.length ? restored.cards : null
-  const initialCards = restoredCards ? [] : props.cards
-  const [sessionCards, setSessionCards] = createSignal<StudyCard[]>(initialCards)
-  const [index, setIndex] = createSignal(
-    restored &&
-      restored.index < (restoredCards?.length ?? initialCards.length)
-      ? restored.index
-      : 0,
-  )
-  const [phase, setPhase] = createSignal<StudyPhase>(
-    restored?.phase === 'correction' && restored.correctionUnlocked
+  const storedCards = restored?.cards?.length ? restored.cards : null
+  const index = restored && restored.index < (storedCards ?? props.cards).length ? restored.index : 0
+  return {
+    storage,
+    storedCards,
+    sessionCards: storedCards ? ([] as StudyCard[]) : props.cards,
+    initial: props,
+    index,
+    phase: (restored?.phase === 'correction' && restored.correctionUnlocked
       ? 'retrying'
-      : restored?.phase ?? 'answering',
-  )
-  const [inputs, setInputs] = createSignal<string[]>(
-    restored?.inputs ?? [restored?.input ?? ''],
-  )
-  const [result, setResult] = createSignal<'correct' | 'incorrect' | null>(
-    restored?.result ?? null,
-  )
-  const [gradeRequestId, setGradeRequestId] = createSignal(
-    restored?.gradeRequestId ?? '',
-  )
-  const [saving, setSaving] = createSignal(false)
-  const [error, setError] = createSignal('')
-  const [restoring, setRestoring] = createSignal(Boolean(restoredCards))
-  const [restoreError, setRestoreError] = createSignal('')
-  let answerInput: HTMLInputElement | undefined
-  const current = createMemo(() => sessionCards()[index()])
-  const progress = createMemo(() => index() + 1)
-  const promptAudio = createMemo(() => {
-    const card = current()
-    return card ? promptAudioFiles(card) : []
-  })
-  const answerAudio = createMemo(() => {
-    const card = current()
-    return card ? answerAudioFiles(card) : []
-  })
-  const shortcutAudio = createMemo(() => {
-    const revealed = phase() === 'correction' || phase() === 'feedback'
-    return revealed && answerAudio().length ? answerAudio() : promptAudio()
-  })
-  const shortcutFallbackAudio = createMemo(() => {
-    const revealed = phase() === 'correction' || phase() === 'feedback'
-    return revealed && answerAudio().length ? promptAudio() : []
-  })
-  async function restoreCards() {
-    if (!restoredCards) return
-    setRestoring(true)
-    setRestoreError('')
-    try {
-      const ids = restoredCards.map((card) => card.cardId)
-      const currentCards = await queryClient.fetchQuery({...queries.cards(props.deckName,ids,props.configuration),staleTime:0})
-      const byId = new Map(currentCards.map((card) => [card.cardId, card]))
-      const refreshed = ids
-        .map((cardId, cardIndex) => {
-          const card = byId.get(cardId)
-          return card && restoredCards[cardIndex]?.practiceOnly
-            ? { ...card, practiceOnly: true }
-            : card
-        })
-        .filter((card): card is StudyCard => Boolean(card))
-      if (refreshed.length === ids.length) {
-        setSessionCards(refreshed)
-      } else {
-        localStorage.removeItem(storage)
-        batch(() => {
-          setSessionCards(props.cards)
-          setIndex(0)
-          setPhase('answering')
-          setInputs([])
-          setResult(null)
-          setGradeRequestId('')
-        })
-      }
-    } catch (caught) {
-      setRestoreError(
-        caught instanceof Error ? caught.message : 'Could not restore session.',
+      : (restored?.phase ?? 'answering')) as StudyPhase,
+    inputs: restored?.inputs ?? [restored?.input ?? ''],
+    result: restored?.result ?? null,
+    gradeRequestId: restored?.gradeRequestId ?? '',
+    saving: false,
+    error: '',
+    restoring: Boolean(storedCards),
+    restoreError: '',
+  }
+}
+
+const StudyRunner = component(
+  { init: initialRunner, identity: (props) => sessionStorageKey(props.storageId, props.mode) },
+  (owner) => {
+    owner.own(stopAudioPlayback)
+    const { storage, storedCards, initial } = owner.read()
+    const cache = initial.cache
+    const patch = (changes: Partial<ReturnType<typeof initialRunner>>) => {
+      owner.patch(changes)
+      const { restoring, restoreError, index, sessionCards, phase, inputs, result, gradeRequestId } =
+        owner.read()
+      if (restoring || restoreError) return
+      if (index >= sessionCards.length) localStorage.removeItem(storage)
+      else
+        localStorage.setItem(
+          storage,
+          JSON.stringify({
+            index,
+            cards: sessionCards,
+            phase,
+            inputs,
+            input: inputs[0] ?? '',
+            result,
+            gradeRequestId,
+          }),
+        )
+    }
+    function restoreCards() {
+      if (!storedCards) return
+      patch({ restoring: true, restoreError: '' })
+      const ids = storedCards.map((card) => card.cardId)
+      owner.run(
+        'restore',
+        cache
+          .prefetch(
+            scheduledCards,
+            { deck: initial.deckName, ids, config: initial.configuration },
+            { refresh: true },
+          )
+          .pipe(
+            Effect.match({
+              onSuccess: (cards) => {
+                const byId = new Map(cards.map((card) => [card.cardId, card]))
+                const refreshed = storedCards.flatMap((stored) => {
+                  const card = byId.get(stored.cardId)
+                  return card ? [stored.practiceOnly ? { ...card, practiceOnly: true } : card] : []
+                })
+                if (refreshed.length === ids.length) patch({ sessionCards: refreshed, restoring: false })
+                else
+                  patch({
+                    sessionCards: initial.cards,
+                    restoring: false,
+                    phase: 'answering',
+                    index: 0,
+                    inputs: [],
+                    result: null,
+                    gradeRequestId: '',
+                  })
+              },
+              onFailure: (error) => patch({ restoring: false, restoreError: error.message }),
+            }),
+          ),
+        'drop',
       )
-    } finally {
-      setRestoring(false)
     }
-  }
+    if (storedCards) restoreCards()
+    else patch({})
 
-  onMount(() => {
-    if (restoredCards) void restoreCards()
-  })
-  onCleanup(stopAudioPlayback)
-
-  createEffect(() => {
-    if (restoring() || restoreError()) return
-    if (index() >= sessionCards().length) {
-      localStorage.removeItem(storage)
-      return
+    function next() {
+      stopAudioPlayback()
+      patch({
+        index: owner.read().index + 1,
+        inputs: [],
+        phase: 'answering',
+        result: null,
+        gradeRequestId: '',
+        error: '',
+      })
     }
-    localStorage.setItem(
-      storage,
-      JSON.stringify({
-        index: index(),
-        phase: phase(),
-        input: inputs()[0] ?? '',
-        inputs: inputs(),
-        result: result(),
-        gradeRequestId: gradeRequestId(),
-        cards: sessionCards(),
-      }),
-    )
-  })
 
-  createEffect(() => {
-    current()
-    phase()
-    queueMicrotask(() => answerInput?.focus())
-  })
-
-  async function save(
-    ease: 1 | 3,
-    outcome: 'correct' | 'incorrect',
-    showFeedback = true,
-  ) {
-    const card = current()
-    if (!card || saving()) return false
-    setSaving(true)
-    setError('')
-    try {
-      if (!card.practiceOnly) {
-        const requestId =
-          gradeRequestId() ||
-          globalThis.crypto?.randomUUID?.() ||
-          `${Date.now()}-${Math.random()}`
-        setGradeRequestId(requestId)
-        const response = await grade.mutateAsync({cardId:card.cardId,ease,requestId})
-        if (!response.saved) {
-          if (response.stale) return 'stale' as const
-          throw new Error('Anki rejected the card grade.')
-        }
+    function submit(event: SubmitEvent) {
+      event.preventDefault()
+      const state = owner.read()
+      const card = state.sessionCards[state.index]
+      if (!card || state.saving) return
+      if (state.phase === 'feedback') {
+        next()
+        return
       }
-      if (props.mode === 'lesson' && outcome === 'incorrect') {
-        setSessionCards((cards) => [
-          ...cards,
-          { ...card, practiceOnly: true },
-        ])
+      const correcting = state.phase === 'correction'
+      if (!correcting && !partsFor(card).every((part, i) => matchesAnswerPart(state.inputs[i] ?? '', part))) {
+        patch({ phase: 'correction' })
+        owner.run('answer-audio', playAudioSequence(answerAudioFiles(card), promptAudioFiles(card)), 'replace')
+        return
       }
-      if (showFeedback) {
-        setResult(outcome)
-        setPhase('feedback')
-        void playAudioSequence(answerAudioFiles(card), promptAudioFiles(card))
-      }
-      return 'saved' as const
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Grade was not saved.')
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function submit(event: SubmitEvent) {
-    event.preventDefault()
-    const card = current()
-    if (!card || saving()) return
-    const currentPhase = phase()
-    if (currentPhase === 'answering' || currentPhase === 'retrying') {
-      const parts = partsFor(card)
-      const correct = parts.every((part, partIndex) =>
-        matchesAnswerPart(inputs()[partIndex] ?? '', part),
+      const requestId = state.gradeRequestId || crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
+      patch({ saving: true, error: '', gradeRequestId: requestId })
+      const grade: Effect.Effect<{ saved: boolean; stale?: boolean }, Error> = card.practiceOnly
+        ? Effect.succeed({ saved: true, stale: false })
+        : api.answer(card.cardId, correcting ? 1 : 3, requestId)
+      owner.run(
+        'grade',
+        grade.pipe(
+          Effect.match({
+            onFailure: (error) => patch({ saving: false, error: error.message }),
+            onSuccess: (response) => {
+              if (!card.practiceOnly) initial.onGraded()
+              if (!response.saved && !response.stale) {
+                patch({ saving: false, error: 'Anki rejected the card grade.' })
+                return
+              }
+              if (correcting && initial.mode === 'lesson' && !response.stale) {
+                patch({ sessionCards: [...state.sessionCards, { ...card, practiceOnly: true }] })
+              }
+              patch({ saving: false })
+              if (correcting || response.stale) next()
+              else {
+                patch({ result: 'correct', phase: 'feedback' })
+                owner.run('answer-audio', playAudioSequence(answerAudioFiles(card), promptAudioFiles(card)), 'replace')
+              }
+            },
+          }),
+        ),
+        'drop',
       )
-      if (correct) {
-        const saved = await save(3, 'correct')
-        if (saved === 'stale') next()
-      }
-      else {
-        setPhase('correction')
-        void playAudioSequence(answerAudioFiles(card), promptAudioFiles(card))
-      }
-      return
     }
-    if (currentPhase === 'correction') {
-      const saved = await save(1, 'incorrect', false)
-      if (saved === 'saved' || saved === 'stale') next()
-      return
-    }
-    next()
-  }
 
-  function next() {
-    stopAudioPlayback()
-    if (index() + 1 >= sessionCards().length) {
-      localStorage.removeItem(storage)
-      setIndex(sessionCards().length)
-      return
-    }
-    batch(() => {
-      setIndex((value) => value + 1)
-      setInputs([])
-      setPhase('answering')
-      setResult(null)
-      setGradeRequestId('')
-      setError('')
-    })
-  }
-
-  return (
-    <Show
-      when={!restoring() && !restoreError()}
-      fallback={
-        <SessionLoading
-          title="Restoring session"
-          onExit={props.onExit}
-          error={restoreError()}
-          retry={() => void restoreCards()}
-        />
-      }
-    >
-      <Show
-      when={current()}
-      fallback={
-        <SessionComplete
-          mode={props.mode}
-          count={sessionCards().length}
-          onExit={props.onComplete ?? props.onExit}
-        />
-      }
-    >
-      {(card) => (
-        <StudyShell
-          progress={progress()}
-          total={sessionCards().length}
-          showCount
-          audioAvailable={shortcutAudio().length > 0}
-          announcement={
-            error()
-              ? `Connection interrupted. Answer preserved. ${error()}`
-              : saving()
-                ? 'Saving answer to Anki.'
-                : phase() === 'correction'
-                  ? 'Answer details are shown. Backspace to correct it, or continue.'
-                  : phase() === 'retrying'
-                    ? 'Retype the answer, then submit it.'
-                  : phase() === 'feedback'
-                    ? result() === 'correct'
-                      ? 'Answer accepted.'
-                      : 'Answer saved as Again.'
-                    : `Card ${progress()} of ${sessionCards().length}.`
-          }
-        >
-          <AudioShortcut
-            filenames={shortcutAudio()}
-            fallbackFilenames={shortcutFallbackAudio()}
-          />
-          <article class="mx-auto w-full max-w-xl">
-            <div
-              class={`card-shell p-6 transition-colors sm:p-8 ${
-                phase() === 'correction'
-                  ? 'bg-[var(--coral-soft)]'
-                  : phase() === 'feedback'
-                    ? result() === 'correct'
-                      ? 'bg-[var(--mint-soft)]'
-                      : 'bg-[var(--coral-soft)]'
-                    : 'bg-white'
-              }`}
-              style={{
-                'background-color':
-                  phase() === 'correction'
-                    ? 'var(--coral-soft)'
-                    : phase() === 'feedback'
-                      ? result() === 'correct'
-                        ? 'var(--mint-soft)'
-                        : 'var(--coral-soft)'
-                      : 'white',
-              }}
-            >
-              <Show when={card().leech}>
-                <p class="mb-4 text-center text-xs font-black uppercase tracking-[0.12em] text-[var(--coral-dark)]">Leech card</p>
-              </Show>
-              <Show when={promptAudio().length}>
-                <div class="mb-5 flex justify-center">
-                  <AudioButton
-                    filenames={promptAudio()}
-                    label="Play prompt"
-                    autoplay={card().contentKind === 'audio'}
-                  />
-                </div>
-              </Show>
-              <Show when={card().promptImageFilenames?.length}>
-                <div class="mb-5 flex flex-wrap justify-center gap-3">
-                  <For each={card().promptImageFilenames}>
-                    {(filename) => (
+    return view(
+      ({ props, sessionCards, index, phase, result, saving, restoring, restoreError, inputs, error }) => {
+        if (restoring || restoreError)
+          return (
+            <SessionLoading
+              title="Restoring session"
+              onExit={props.onExit}
+              error={restoreError}
+              retry={restoreCards}
+            />
+          )
+        const card = sessionCards[index]
+        if (!card)
+          return (
+            <SessionComplete
+              mode={props.mode}
+              count={sessionCards.length}
+              onExit={props.onComplete ?? props.onExit}
+            />
+          )
+        const progress = index + 1
+        const promptAudio = promptAudioFiles(card)
+        const answerAudio = answerAudioFiles(card)
+        const revealed = phase === 'correction' || phase === 'feedback'
+        const shortcutAudio = revealed && answerAudio.length ? answerAudio : promptAudio
+        const shortcutFallbackAudio = revealed && answerAudio.length ? promptAudio : []
+        return (
+          <StudyShell
+            progress={progress}
+            total={sessionCards.length}
+            showCount
+            audioAvailable={shortcutAudio.length > 0}
+            announcement={
+              error
+                ? `Connection interrupted. Answer preserved. ${error}`
+                : saving
+                  ? 'Saving answer to Anki.'
+                  : phase === 'correction'
+                    ? 'Answer details are shown. Backspace to correct it, or continue.'
+                    : phase === 'retrying'
+                      ? 'Retype the answer, then submit it.'
+                      : phase === 'feedback'
+                        ? result === 'correct'
+                          ? 'Answer accepted.'
+                          : 'Answer saved as Again.'
+                        : `Card ${progress} of ${sessionCards.length}.`
+            }
+          >
+            <AudioShortcut filenames={shortcutAudio} fallbackFilenames={shortcutFallbackAudio} />
+            <article class="mx-auto w-full max-w-xl">
+              <div
+                class={`card-shell p-6 transition-colors sm:p-8 ${
+                  phase === 'correction'
+                    ? 'bg-[var(--coral-soft)]'
+                    : phase === 'feedback'
+                      ? result === 'correct'
+                        ? 'bg-[var(--mint-soft)]'
+                        : 'bg-[var(--coral-soft)]'
+                      : 'bg-white'
+                }`}
+                style={{
+                  'background-color':
+                    phase === 'correction'
+                      ? 'var(--coral-soft)'
+                      : phase === 'feedback'
+                        ? result === 'correct'
+                          ? 'var(--mint-soft)'
+                          : 'var(--coral-soft)'
+                        : 'white',
+                }}
+              >
+                {card.leech ? (
+                  <p class="mb-4 text-center text-xs font-black uppercase tracking-[0.12em] text-[var(--coral-dark)]">
+                    Leech card
+                  </p>
+                ) : null}
+                {promptAudio.length ? (
+                  <div class="mb-5 flex justify-center">
+                    <AudioButton
+                      filenames={promptAudio}
+                      label="Play prompt"
+                      autoplay={card.contentKind === 'audio'}
+                    />
+                  </div>
+                ) : null}
+                {card.promptImageFilenames?.length ? (
+                  <div class="mb-5 flex flex-wrap justify-center gap-3">
+                    {list(card.promptImageFilenames ?? [], (filename) => (
                       <img
                         class="max-h-64 max-w-full rounded-xl object-contain"
                         src={api.mediaUrl(filename)}
                         alt=""
                       />
-                    )}
-                  </For>
-                </div>
-              </Show>
-              <Show when={card().prompt}>
-                <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
-                  <GermanArticleText
-                    value={card().prompt}
-                    language={card().promptLanguage}
-                  />
-                </h1>
-              </Show>
+                    ))}
+                  </div>
+                ) : null}
+                {card.prompt ? (
+                  <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
+                    <GermanArticleText value={card.prompt} language={card.promptLanguage} />
+                  </h1>
+                ) : null}
 
-              <form class="mt-7" onSubmit={submit}>
-                <div class="mx-auto max-w-sm space-y-3">
-                  <For each={partsFor(card())}>
-                    {(part, partIndex) => (
-                      <label class="block">
-                        <Show when={partsFor(card()).length > 1}>
-                          <span class="mb-1.5 block text-sm font-black">{part.label}</span>
-                        </Show>
-                        <input
-                          ref={(element) => {
-                            if (partIndex() === 0) answerInput = element
-                          }}
-                          aria-label={part.label}
-                          class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
-                            phase() === 'correction'
-                              ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
-                              : phase() === 'feedback'
-                                ? result() === 'correct'
-                                  ? 'border-[var(--mint)]'
-                                  : 'border-[var(--coral)]'
-                              : 'border-black/15 focus:border-[var(--violet)] focus:ring-4 focus:ring-[color:var(--violet)]/15'
-                          }`}
-                          value={inputs()[partIndex()] ?? ''}
-                          readOnly={
-                            saving() ||
-                            phase() === 'feedback' ||
-                            phase() === 'correction'
-                          }
-                          autocomplete="off"
-                          autocapitalize="none"
-                          spellcheck={false}
-                          onKeyDown={(event) => {
-                            if (
-                              event.key !== 'Backspace' ||
-                              phase() !== 'correction'
-                            ) {
-                              return
+                <form class="mt-7" onSubmit={submit}>
+                  <div class="mx-auto max-w-sm space-y-3">
+                    {list(
+                      partsFor(card) ?? [],
+                      (item) => item.id,
+                      (part, partIndex) => (
+                        <label class="block">
+                          {partsFor(card).length > 1 ? (
+                            <span class="mb-1.5 block text-sm font-black">{part.label}</span>
+                          ) : null}
+                          <input
+                            use={
+                              partIndex === 0
+                                ? domBinding(`${card.cardId}:${phase}:${index}`, focusAnswer)
+                                : undefined
                             }
-                            event.preventDefault()
-                            setInputs(partsFor(card()).map(() => ''))
-                            setPhase('retrying')
-                            setGradeRequestId('')
-                            setError('')
-                            queueMicrotask(() => answerInput?.focus())
-                          }}
-                          onInput={(event) =>
-                            setInputs((current) => {
-                              setGradeRequestId('')
-                              setError('')
-                              const next = [...current]
-                              next[partIndex()] = event.currentTarget.value
-                              return next
-                            })
-                          }
-                        />
-                      </label>
+                            aria-label={part.label}
+                            class={`h-12 w-full rounded-xl border bg-white px-4 text-center text-lg font-bold shadow-sm outline-none transition ${
+                              phase === 'correction'
+                                ? 'border-[var(--coral)] focus:ring-4 focus:ring-[color:var(--coral)]/15'
+                                : phase === 'feedback'
+                                  ? result === 'correct'
+                                    ? 'border-[var(--mint)]'
+                                    : 'border-[var(--coral)]'
+                                  : 'border-black/15 focus:border-[var(--violet)] focus:ring-4 focus:ring-[color:var(--violet)]/15'
+                            }`}
+                            value={inputs[partIndex] ?? ''}
+                            readOnly={saving || phase === 'feedback' || phase === 'correction'}
+                            autocomplete="off"
+                            autocapitalize="none"
+                            spellcheck={false}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Backspace' || phase !== 'correction') {
+                                return
+                              }
+                              event.preventDefault()
+                              patch({
+                                inputs: partsFor(card).map(() => ''),
+                                phase: 'retrying',
+                                gradeRequestId: '',
+                                error: '',
+                              })
+                            }}
+                            onInput={(event) => {
+                              const next = [...owner.read().inputs]
+                              next[partIndex] = event.currentTarget.value
+                              patch({ inputs: next, gradeRequestId: '', error: '' })
+                            }}
+                          />
+                        </label>
+                      ),
                     )}
-                  </For>
-                </div>
+                  </div>
 
-                <Show when={phase() === 'correction' || phase() === 'feedback'}>
-                  <Feedback card={card()} promptAudio={promptAudio()} />
-                </Show>
+                  {phase === 'correction' || phase === 'feedback' ? (
+                    <Feedback card={card} promptAudio={promptAudio} />
+                  ) : null}
 
-                <Show when={error()}>
-                  <p role="alert" class="mt-4 rounded-lg bg-[var(--coral)] px-4 py-3 text-sm font-bold text-white">
-                    {error()} Answer and queue position are preserved. Submit again.
-                  </p>
-                </Show>
+                  {error ? (
+                    <p
+                      role="alert"
+                      class="mt-4 rounded-lg bg-[var(--coral)] px-4 py-3 text-sm font-bold text-white"
+                    >
+                      {error} Answer and queue position are preserved. Submit again.
+                    </p>
+                  ) : null}
 
-                <div class="mx-auto mt-5 max-w-sm">
-                <button
-                  class="button-soft-primary w-full"
-                  disabled={saving()}
-                >
-                  <Show when={saving()} fallback={phase() === 'feedback' || phase() === 'correction' ? 'Continue' : 'Check answer'}>
-                    <LoaderCircle class="size-4 animate-spin" />
-                    Saving to Anki…
-                  </Show>
-                  <Show when={!saving()}><ChevronRight class="size-4" /></Show>
-                </button>
-                </div>
-              </form>
-            </div>
-          </article>
-        </StudyShell>
-      )}
-      </Show>
-    </Show>
-  )
+                  <div class="mx-auto mt-5 max-w-sm">
+                    <button class="button-soft-primary w-full" disabled={saving}>
+                      {saving ? (
+                        <>
+                          <LoaderCircle class="size-4 animate-spin" />
+                          Saving to Anki…
+                        </>
+                      ) : phase === 'feedback' || phase === 'correction' ? (
+                        'Continue'
+                      ) : (
+                        'Check answer'
+                      )}
+                      {!saving ? <ChevronRight class="size-4" /> : null}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </article>
+          </StudyShell>
+        )
+      },
+    )
+  },
+)
+
+function focusAnswer(element: HTMLInputElement) {
+  const focus = () =>
+    queueMicrotask(() => {
+      if (element.isConnected) element.focus()
+    })
+  focus()
+  return { update: focus }
 }
 
-function Feedback(props: {
+const Feedback = view<{
   card: StudyCard
   promptAudio: string[]
-}) {
+}>((props) => {
   return (
     <div class="mt-6 border-t border-black/10 pt-6">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p class="text-2xl font-black">
-            <GermanArticleText
-              value={props.card.canonicalAnswer}
-              language={props.card.answerLanguage}
-            />
+            <GermanArticleText value={props.card.canonicalAnswer} language={props.card.answerLanguage} />
           </p>
         </div>
-        <AudioButton
-          filenames={answerAudioFiles(props.card)}
-          fallbackFilenames={props.promptAudio}
-        />
+        <AudioButton filenames={answerAudioFiles(props.card)} fallbackFilenames={props.promptAudio} />
       </div>
       <div class="mt-5 grid gap-3 sm:grid-cols-2">
-        <Show when={props.card.sourceExample}>
+        {props.card.sourceExample ? (
           <p class="rounded-xl bg-white/70 p-4 italic leading-7">{props.card.sourceExample}</p>
-        </Show>
-        <Show when={props.card.targetExample}>
+        ) : null}
+        {props.card.targetExample ? (
           <p class="rounded-xl bg-white/70 p-4 italic leading-7">{props.card.targetExample}</p>
-        </Show>
+        ) : null}
       </div>
-      <Show when={props.card.note}>
-        <NoteContent value={props.card.note} />
-      </Show>
-      <For each={(props.card.details ?? []).filter((detail) =>
-        ![
-          props.card.sourceExample,
-          props.card.targetExample,
-          props.card.note,
-          props.card.prompt,
-          props.card.canonicalAnswer,
-        ].includes(detail.value),
-      )}>
-        {(detail) => (
+      {props.card.note ? <NoteContent value={props.card.note} /> : null}
+      {list(
+        (props.card.details ?? []).filter(
+          (detail) =>
+            ![
+              props.card.sourceExample,
+              props.card.targetExample,
+              props.card.note,
+              props.card.prompt,
+              props.card.canonicalAnswer,
+            ].includes(detail.value),
+        ) ?? [],
+        (item) => item.label,
+        (detail) => (
           <p class="mt-3 text-sm text-[var(--muted)]">
             <strong>{humanizeField(detail.label)}:</strong> {detail.value}
           </p>
-        )}
-      </For>
-      <Show when={props.card.answerImageFilenames?.length}>
+        ),
+      )}
+      {props.card.answerImageFilenames?.length ? (
         <div class="mt-4 flex flex-wrap gap-3">
-          <For each={props.card.answerImageFilenames}>
-            {(filename) => (
-              <img
-                class="max-h-48 max-w-full rounded-xl object-contain"
-                src={api.mediaUrl(filename)}
-                alt=""
-              />
-            )}
-          </For>
+          {list(props.card.answerImageFilenames ?? [], (filename) => (
+            <img class="max-h-48 max-w-full rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />
+          ))}
         </div>
-      </Show>
+      ) : null}
     </div>
   )
-}
+})
 
 const GERMAN_ARTICLE_CLASSES: Record<GermanGenderArticle, string> = {
   der: 'text-blue-600',
@@ -830,32 +742,24 @@ const GERMAN_ARTICLE_CLASSES: Record<GermanGenderArticle, string> = {
   das: 'text-green-600',
 }
 
-function GermanArticleText(props: {
+const GermanArticleText = view<{
   value: string
   language?: AnswerLanguage
-}) {
-  const headword = createMemo(() =>
-    props.language === 'german' ? splitGermanArticle(props.value) : null,
-  )
+}>((props) => {
+  const headword = props.language === 'german' ? splitGermanArticle(props.value) : null
+  if (!headword) return props.value
   return (
-    <Show when={headword()} fallback={props.value}>
-      {(parsed) => (
-        <span aria-label={props.value}>
-          <For each={parsed().articles}>
-            {(article, index) => (
-              <>
-                <Show when={index() > 0}>/</Show>
-                <span class={GERMAN_ARTICLE_CLASSES[article]}>{article}</span>
-              </>
-            )}
-          </For>
-          {' '}
-          {parsed().word}
-        </span>
-      )}
-    </Show>
+    <span aria-label={props.value}>
+      {list(headword.articles, (article, index) => (
+        <>
+          {index > 0 ? '/' : ''}
+          <span class={GERMAN_ARTICLE_CLASSES[article]}>{article}</span>
+        </>
+      ))}{' '}
+      {headword.word}
+    </span>
   )
-}
+})
 
 function humanizeField(name: string) {
   return name
@@ -864,34 +768,25 @@ function humanizeField(name: string) {
     .replace(/^./u, (letter) => letter.toUpperCase())
 }
 
-function NoteContent(props: { value: string }) {
-  return (
-    <Show
-      when={props.value.length > 140}
-      fallback={
-        <p class="mt-4 text-sm font-semibold text-[var(--muted)]">
-          {props.value}
-        </p>
-      }
-    >
-      <details class="mt-4 rounded-xl bg-white/65 px-4 py-3 text-sm text-[var(--muted)]">
-        <summary class="cursor-pointer font-black text-[var(--ink)]">
-          Grammar note
-        </summary>
-        <p class="mt-3 leading-6">{props.value}</p>
-      </details>
-    </Show>
+const NoteContent = view<{ value: string }>((props) => {
+  return props.value.length > 140 ? (
+    <details class="mt-4 rounded-xl bg-white/65 px-4 py-3 text-sm text-[var(--muted)]">
+      <summary class="cursor-pointer font-black text-[var(--ink)]">Grammar note</summary>
+      <p class="mt-3 leading-6">{props.value}</p>
+    </details>
+  ) : (
+    <p class="mt-4 text-sm font-semibold text-[var(--muted)]">{props.value}</p>
   )
-}
+})
 
-function StudyShell(props: {
+const StudyShell = view<{
   progress: number
   total: number
   showCount?: boolean
   audioAvailable?: boolean
   announcement?: string
-  children: unknown
-}) {
+  children?: JSX.Element
+}>((props) => {
   return (
     <section>
       <div class="relative left-1/2 -mt-7 mb-6 w-screen -translate-x-1/2">
@@ -909,64 +804,74 @@ function StudyShell(props: {
           />
         </div>
       </div>
-      <Show when={props.showCount}>
+      {props.showCount ? (
         <div class="mx-auto mb-3 flex w-full max-w-xl justify-end px-1">
           <span class="text-xs font-black tabular-nums text-[var(--muted)]">
             {Math.min(props.progress, props.total)} / {props.total}
           </span>
         </div>
-      </Show>
-      <Show when={props.announcement}>
+      ) : null}
+      {props.announcement ? (
         <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {props.announcement}
         </p>
-      </Show>
-      {props.children as never}
+      ) : null}
+      {props.children}
       <div
         class="mx-auto mt-5 hidden max-w-xl items-center justify-end gap-4 text-xs font-semibold text-[var(--muted)] sm:flex"
         aria-label="Keyboard shortcuts"
       >
-        <span><kbd>Enter</kbd> Submit / continue</span>
-        <Show when={props.audioAvailable}>
+        <span>
+          <kbd>Enter</kbd> Submit / continue
+        </span>
+        {props.audioAvailable ? (
           <span>
             <kbd>Ctrl</kbd>+<kbd>J</kbd> Replay audio
           </span>
-        </Show>
+        ) : null}
       </div>
     </section>
   )
-}
+})
 
-function SessionLoading(props: {
+const SessionLoading = view<{
   title: string
   onExit: () => void
-  error: unknown
+  error: string | undefined
   retry: () => void
-}) {
+}>((props) => {
   return (
     <section class="mx-auto mt-20 max-w-lg text-center">
-      <Show when={props.error} fallback={<LoaderCircle class="mx-auto size-10 animate-spin text-[var(--violet)]" />}>
+      {props.error ? (
         <CircleAlert class="mx-auto size-10 text-[var(--coral)]" />
-      </Show>
+      ) : (
+        <LoaderCircle class="mx-auto size-10 animate-spin text-[var(--violet)]" />
+      )}
       <h1 class="mt-5 text-2xl font-black">{props.error ? 'Could not start session' : props.title}</h1>
-      <Show when={props.error}>
-        <p role="alert" class="mt-3 text-[var(--muted)]">{props.error instanceof Error ? props.error.message : 'Try again.'}</p>
-      </Show>
+      {props.error ? (
+        <p role="alert" class="mt-3 text-[var(--muted)]">
+          {props.error}
+        </p>
+      ) : null}
       <div class="mt-6 flex justify-center gap-3">
-        <Show when={props.error}>
-          <button class="button-soft-primary" onClick={props.retry}>Retry</button>
-        </Show>
-        <button class="button-quiet" onClick={props.onExit}>Back to dashboard</button>
+        {props.error ? (
+          <button class="button-soft-primary" onClick={props.retry}>
+            Retry
+          </button>
+        ) : null}
+        <button class="button-quiet" onClick={props.onExit}>
+          Back to dashboard
+        </button>
       </div>
     </section>
   )
-}
+})
 
-function SessionEmpty(props: {
+const SessionEmpty = view<{
   title: string
   copy: string
   onExit: () => void
-}) {
+}>((props) => {
   return (
     <section class="mx-auto mt-16 max-w-lg text-center">
       <div class="mx-auto grid size-20 place-items-center rounded-full bg-[var(--mint-soft)]">
@@ -974,16 +879,18 @@ function SessionEmpty(props: {
       </div>
       <h1 class="mt-6 text-3xl font-black">{props.title}</h1>
       <p class="mt-3 text-[var(--muted)]">{props.copy}</p>
-      <button class="button-soft-primary mt-7" onClick={props.onExit}>Back to dashboard</button>
+      <button class="button-soft-primary mt-7" onClick={props.onExit}>
+        Back to dashboard
+      </button>
     </section>
   )
-}
+})
 
-function SessionComplete(props: {
+const SessionComplete = view<{
   mode: 'lesson' | 'review'
   count: number
   onExit: () => void
-}) {
+}>((props) => {
   return (
     <section class="mx-auto mt-10 max-w-xl text-center">
       <div class="mx-auto grid size-24 place-items-center rounded-[32px] bg-[var(--yellow-soft)] text-[var(--ink)] shadow-[0_10px_28px_rgb(25_34_58_/_10%)]">
@@ -993,12 +900,18 @@ function SessionComplete(props: {
       <h1 class="mt-2 text-4xl font-black tracking-[-0.05em]">
         {props.count}{' '}
         {props.mode === 'lesson'
-          ? props.count === 1 ? 'quiz answer' : 'quiz answers'
-          : props.count === 1 ? 'review' : 'reviews'}{' '}
+          ? props.count === 1
+            ? 'quiz answer'
+            : 'quiz answers'
+          : props.count === 1
+            ? 'review'
+            : 'reviews'}{' '}
         done
       </h1>
       <p class="mt-4 text-[var(--muted)]">Anki saved every result.</p>
-      <button class="button-soft-primary mt-8" onClick={props.onExit}>Return to dashboard</button>
+      <button class="button-soft-primary mt-8" onClick={props.onExit}>
+        Return to dashboard
+      </button>
     </section>
   )
-}
+})

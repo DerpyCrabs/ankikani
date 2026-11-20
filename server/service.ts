@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import type {
   AnkiCardInfo,
   DashboardData,
@@ -11,18 +12,10 @@ import type {
   StudyConfig,
   StudyCard,
 } from '../src/lib/domain'
-import {
-  adaptCard,
-  buildDeckConfig,
-  normalizeConfig,
-} from '../src/lib/adapters'
-import {
-  activeSpread,
-  buildStudyQueue,
-  calculateStreak,
-} from '../src/lib/study'
+import { adaptCard, buildDeckConfig, normalizeConfig } from '../src/lib/adapters'
+import { activeSpread, buildStudyQueue, calculateStreak } from '../src/lib/study'
 import { deckSchemaFingerprint } from '../src/lib/storage'
-import { ankiInvoke, ankiMulti } from './anki'
+import { invokeEffect, multiEffect } from './anki'
 
 interface DeckStats {
   deck_id: number
@@ -76,41 +69,43 @@ function quotedDeck(deckName: string): string {
   return `deck:"${deckName.replaceAll('"', '\\"')}"`
 }
 
-async function deckStats(deckName: string): Promise<DeckStats> {
-  const result = await ankiInvoke<Record<string, DeckStats>>('getDeckStats', {
+const deckStats = Effect.fn('deckStats')(function* (deckName: string): Effect.fn.Return<DeckStats, Error> {
+  const result = yield* invokeEffect<Record<string, DeckStats>>('getDeckStats', {
     decks: [deckName],
   })
   const stats = Object.values(result)[0]
-  if (!stats) throw new Error(`Deck not found: ${deckName}`)
+  if (!stats) return yield* Effect.fail(new Error(`Deck not found: ${deckName}`))
   return stats
-}
+})
 
-async function cardsInfo(cardIds: number[]): Promise<AnkiCardInfo[]> {
+const cardsInfo = Effect.fn('cardsInfo')(function* (
+  cardIds: number[],
+): Effect.fn.Return<AnkiCardInfo[], Error> {
   if (!cardIds.length) return []
   const cards: AnkiCardInfo[] = []
   for (let offset = 0; offset < cardIds.length; offset += 500) {
     cards.push(
-      ...(await ankiInvoke<AnkiCardInfo[]>('cardsInfo', {
+      ...(yield* invokeEffect<AnkiCardInfo[]>('cardsInfo', {
         cards: cardIds.slice(offset, offset + 500),
       })),
     )
   }
   return cards
-}
+})
 
-async function mappedCards(
+const mappedCards = Effect.fn('mappedCards')(function* (
   cardIds: number[],
   deckName: string,
   configuration: StudyConfig,
 ) {
   const config = normalizeConfig(deckName, configuration)
-  return (await cardsInfo(cardIds))
+  return (yield* cardsInfo(cardIds))
     .map((card) => adaptCard(card, config))
     .filter((card): card is StudyCard => Boolean(card))
-}
+})
 
-export async function listDecks(): Promise<DeckSummary[]> {
-  const decks = await ankiInvoke<Record<string, number>>('deckNamesAndIds')
+export const listDecks = Effect.fn('listDecks')(function* (): Effect.fn.Return<DeckSummary[], Error> {
+  const decks = yield* invokeEffect<Record<string, number>>('deckNamesAndIds')
   const entries = Object.entries(decks)
   return entries
     .filter(([name]) => !name.includes('::'))
@@ -119,16 +114,16 @@ export async function listDecks(): Promise<DeckSummary[]> {
       name,
       supported: true,
       modelNames: [],
-      subdeckCount: entries.filter(([candidate]) =>
-        candidate.startsWith(`${name}::`),
-      ).length,
+      subdeckCount: entries.filter(([candidate]) => candidate.startsWith(`${name}::`)).length,
     }))
     .toSorted((a, b) => a.name.localeCompare(b.name))
-}
+})
 
-export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
-  const allModelNames = await ankiInvoke<string[]>('modelNames')
-  const matches = await ankiMulti<number[][]>(
+export const getDeckProfile = Effect.fn('getDeckProfile')(function* (
+  deckName: string,
+): Effect.fn.Return<DeckProfile, Error> {
+  const allModelNames = yield* invokeEffect<string[]>('modelNames')
+  const matches = yield* multiEffect<number[][]>(
     allModelNames.map((modelName) => ({
       action: 'findNotes',
       params: {
@@ -136,15 +131,9 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
       },
     })),
   )
-  const noteIdsByModel = new Map(
-    allModelNames.map((modelName, index) => [modelName, matches[index] ?? []]),
-  )
-  const modelNames = allModelNames.filter(
-    (modelName) => noteIdsByModel.get(modelName)?.length,
-  )
-  const modelDetails = await ankiMulti<
-    Array<string[] | Record<string, { Front: string; Back: string }>>
-  >(
+  const noteIdsByModel = new Map(allModelNames.map((modelName, index) => [modelName, matches[index] ?? []]))
+  const modelNames = allModelNames.filter((modelName) => noteIdsByModel.get(modelName)?.length)
+  const modelDetails = yield* multiEffect<Array<string[] | Record<string, { Front: string; Back: string }>>>(
     modelNames.flatMap((modelName) => [
       { action: 'modelFieldNames', params: { modelName } },
       { action: 'modelTemplates', params: { modelName } },
@@ -160,7 +149,7 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
       { Front: string; Back: string }
     >
   })
-  const sampleIds = await ankiMulti<number[][]>(
+  const sampleIds = yield* multiEffect<number[][]>(
     modelNames.map((modelName) => ({
       action: 'findCards',
       params: {
@@ -169,9 +158,9 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
     })),
   )
   const samplesByModel: DeckProfile['samplesByModel'] = {}
-  await Promise.all(
-    modelNames.map(async (modelName, index) => {
-      const candidates = await cardsInfo((sampleIds[index] ?? []).slice(0, 40))
+  yield* Effect.forEach(modelNames, (modelName, index) =>
+    Effect.gen(function* () {
+      const candidates = yield* cardsInfo((sampleIds[index] ?? []).slice(0, 40))
       const notes = new Set<number>()
       samplesByModel[modelName] = candidates.filter((card) => {
         if (notes.has(card.note) || notes.size >= 8) return false
@@ -197,9 +186,7 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
     modelNames,
     fieldsByModel,
     templatesByModel,
-    suggestedMapping: modelNames.includes(GOETHE_MAPPING.modelName)
-      ? GOETHE_MAPPING
-      : null,
+    suggestedMapping: modelNames.includes(GOETHE_MAPPING.modelName) ? GOETHE_MAPPING : null,
     suggestedConfig: detected.config,
     compatibility: detected.compatibility,
     samplesByModel,
@@ -208,7 +195,7 @@ export async function getDeckProfile(deckName: string): Promise<DeckProfile> {
     ...profile,
     schemaFingerprint: deckSchemaFingerprint(profile),
   }
-}
+})
 
 function dayDescriptor(offset: number) {
   const date = new Date()
@@ -219,16 +206,13 @@ function dayDescriptor(offset: number) {
     `${date.getMonth() + 1}`.padStart(2, '0'),
     `${date.getDate()}`.padStart(2, '0'),
   ].join('-')
-  const label =
-    offset === 0
-      ? 'Today'
-      : date.toLocaleDateString(undefined, { weekday: 'short' })
+  const label = offset === 0 ? 'Today' : date.toLocaleDateString(undefined, { weekday: 'short' })
   return { date: iso, label }
 }
 
-async function forecast(deckName: string): Promise<ForecastDay[]> {
+const forecast = Effect.fn('forecast')(function* (deckName: string): Effect.fn.Return<ForecastDay[], Error> {
   const query = quotedDeck(deckName)
-  const ids = await ankiMulti<number[][]>(
+  const ids = yield* multiEffect<number[][]>(
     Array.from({ length: 7 }, (_, offset) => ({
       action: 'findCards',
       params: { query: `${query} prop:due=${offset} -is:suspended -is:buried` },
@@ -239,7 +223,7 @@ async function forecast(deckName: string): Promise<ForecastDay[]> {
     count: cardIds.length,
     cardIds,
   }))
-}
+})
 
 function reviewedOn(log: ReviewLog[], date: Date): number {
   const start = new Date(date)
@@ -260,17 +244,17 @@ function reviewEase(review: ReviewLog): number {
   return Array.isArray(review) ? review[3] : review.ease
 }
 
-export async function getDashboard(
+export const getDashboard = Effect.fn('getDashboard')(function* (
   deckName: string,
   configuration: StudyConfig,
-): Promise<DashboardData> {
+): Effect.fn.Return<DashboardData, Error> {
   const deckQuery = quotedDeck(deckName)
-  const [stats, allCardIds, reviewLog, week, dueIds] = await Promise.all([
+  const [stats, allCardIds, reviewLog, week, dueIds] = yield* Effect.all([
     deckStats(deckName),
-    ankiInvoke<number[]>('findCards', { query: deckQuery }),
-    ankiInvoke<ReviewLog[]>('cardReviews', { deck: deckName, startID: 0 }),
+    invokeEffect<number[]>('findCards', { query: deckQuery }),
+    invokeEffect<ReviewLog[]>('cardReviews', { deck: deckName, startID: 0 }),
     forecast(deckName),
-    ankiMulti<[number[], number[]]>([
+    multiEffect<[number[], number[]]>([
       {
         action: 'findCards',
         params: {
@@ -285,7 +269,7 @@ export async function getDashboard(
       },
     ]),
   ])
-  const allCards = await mappedCards(allCardIds, deckName, configuration)
+  const allCards = yield* mappedCards(allCardIds, deckName, configuration)
   const enabledCardIds = new Set(allCards.map((card) => card.cardId))
   const visibleWeek = week.map((day) => {
     const cardIds = day.cardIds.filter((cardId) => enabledCardIds.has(cardId))
@@ -293,19 +277,15 @@ export async function getDashboard(
   })
   const learningDue = dueIds[0]
     .slice(0, stats.learn_count)
-    .filter((cardId) => enabledCardIds.has(cardId))
-    .length
+    .filter((cardId) => enabledCardIds.has(cardId)).length
   const reviewsDue = dueIds[1]
     .slice(0, stats.review_count)
-    .filter((cardId) => enabledCardIds.has(cardId))
-    .length
+    .filter((cardId) => enabledCardIds.has(cardId)).length
   const now = new Date()
   const yesterday = new Date(now)
   yesterday.setDate(yesterday.getDate() - 1)
   const streak = calculateStreak(
-    reviewLog
-      .filter((review) => reviewEase(review) > 0)
-      .map((review) => reviewId(review)),
+    reviewLog.filter((review) => reviewEase(review) > 0).map((review) => reviewId(review)),
     now,
   )
   const newNoteIds = new Set(
@@ -315,10 +295,7 @@ export async function getDashboard(
 
   return {
     deckName,
-    lessonsAvailable: Math.min(
-      newNoteIds.size,
-      stats.new_count,
-    ),
+    lessonsAvailable: Math.min(newNoteIds.size, stats.new_count),
     reviewsDue: reviewsDue + learningDue,
     learning: learningDue,
     completedToday: reviewedOn(reviewLog, now),
@@ -332,15 +309,15 @@ export async function getDashboard(
     totalCards: allCards.length,
     updatedAt: new Date().toISOString(),
   }
-}
+})
 
-export async function getReviewSession(
+export const getReviewSession = Effect.fn('getReviewSession')(function* (
   deckName: string,
   configuration: StudyConfig,
-): Promise<SessionPayload> {
-  const stats = await deckStats(deckName)
+): Effect.fn.Return<SessionPayload, Error> {
+  const stats = yield* deckStats(deckName)
   const deckQuery = quotedDeck(deckName)
-  const [learningIds, reviewIds] = await ankiMulti<[number[], number[]]>([
+  const [learningIds, reviewIds] = yield* multiEffect<[number[], number[]]>([
     {
       action: 'findCards',
       params: {
@@ -354,33 +331,24 @@ export async function getReviewSession(
       },
     },
   ])
-  const selectedIds = [
-    ...learningIds.slice(0, stats.learn_count),
-    ...reviewIds.slice(0, stats.review_count),
-  ]
+  const selectedIds = [...learningIds.slice(0, stats.learn_count), ...reviewIds.slice(0, stats.review_count)]
   return {
     deckName,
-    cards: buildStudyQueue(
-      await mappedCards(selectedIds, deckName, configuration),
-    ),
+    cards: buildStudyQueue(yield* mappedCards(selectedIds, deckName, configuration)),
   }
-}
+})
 
-export async function getLessonSession(
+export const getLessonSession = Effect.fn('getLessonSession')(function* (
   deckName: string,
   configuration: StudyConfig,
-): Promise<LessonPayload> {
-  const stats = await deckStats(deckName)
+): Effect.fn.Return<LessonPayload, Error> {
+  const stats = yield* deckStats(deckName)
   if (stats.new_count <= 0) return { deckName, items: [], quizCards: [] }
 
-  const newIds = await ankiInvoke<number[]>('findCards', {
+  const newIds = yield* invokeEffect<number[]>('findCards', {
     query: `${quotedDeck(deckName)} is:new -is:suspended -is:buried`,
   })
-  const candidates = await mappedCards(
-    newIds,
-    deckName,
-    configuration,
-  )
+  const candidates = yield* mappedCards(newIds, deckName, configuration)
   const grouped = new Map<number, StudyCard[]>()
   for (const card of candidates) {
     const group = grouped.get(card.noteId) ?? []
@@ -440,75 +408,52 @@ export async function getLessonSession(
     items,
     quizCards: buildStudyQueue(items.flatMap((item) => item.cards)),
   }
-}
+})
 
-export async function getCards(
+export const getCards = Effect.fn('getCards')(function* (
   cardIds: number[],
   deckName: string,
   configuration: StudyConfig,
-): Promise<StudyCard[]> {
-  return mappedCards(cardIds, deckName, configuration)
-}
+): Effect.fn.Return<StudyCard[], Error> {
+  return yield* mappedCards(cardIds, deckName, configuration)
+})
 
-const answerRequests = new Map<
-  string,
-  {
-    cardId: number
-    ease: 1 | 3
-    result: Promise<{
-      saved: boolean
-      stale?: true
-      cardId: number
-      ease: 1 | 3
-    }>
-  }
->()
+type GradeResult = { saved: boolean; stale?: true; cardId: number; ease: 1 | 3 }
+type GradeRequest = { cardId: number; ease: 1 | 3; result: Effect.Effect<GradeResult, Error> }
 
-export async function answerCard(
-  cardId: number,
-  ease: 1 | 3,
-  requestId?: string,
-) {
-  if (requestId) {
-    const existing = answerRequests.get(requestId)
-    if (existing) {
-      if (existing.cardId !== cardId || existing.ease !== ease) {
-        throw new Error('Answer request ID was reused for a different grade.')
-      }
-      return existing.result
+const pendingGrades = new Map<string, GradeRequest>()
+const savedGrades = new Map<string, GradeRequest>()
+
+export const answerCard = Effect.fn('answerCard')(function* (cardId: number, ease: 1 | 3, requestId?: string) {
+  const write = invokeEffect<boolean[]>('answerCards', { answers: [{ cardId, ease }] }).pipe(
+    Effect.map(([accepted]): GradeResult => accepted
+      ? { saved: true, cardId, ease }
+      : { saved: false, stale: true, cardId, ease }),
+  )
+  if (!requestId) return yield* write
+  const prior = pendingGrades.get(requestId) ?? savedGrades.get(requestId)
+  if (prior) {
+    if (prior.cardId !== cardId || prior.ease !== ease) {
+      return yield* Effect.fail(new Error('Answer request ID was reused for a different grade.'))
     }
+    return yield* prior.result
   }
+  const result = yield* Effect.cached(write.pipe(
+    Effect.tap(grade => Effect.sync(() => {
+      savedGrades.set(requestId, { cardId, ease, result: Effect.succeed(grade) })
+      if (savedGrades.size > 2_000) savedGrades.delete(savedGrades.keys().next().value!)
+    })),
+    Effect.ensuring(Effect.sync(() => pendingGrades.delete(requestId))),
+  ))
+  pendingGrades.set(requestId, { cardId, ease, result })
+  return yield* result
+})
 
-  const result = (async () => {
-    const accepted = await ankiInvoke<boolean[]>('answerCards', {
-      answers: [{ cardId, ease }],
-    })
-    if (!accepted[0]) {
-      return { saved: false, stale: true as const, cardId, ease }
-    }
-    return { saved: true, cardId, ease }
-  })()
-
-  if (requestId) {
-    answerRequests.set(requestId, { cardId, ease, result })
-    if (answerRequests.size > 2_000) {
-      const oldest = answerRequests.keys().next().value
-      if (oldest) answerRequests.delete(oldest)
-    }
-  }
-  try {
-    return await result
-  } catch (error) {
-    if (requestId) answerRequests.delete(requestId)
-    throw error
-  }
-}
-
-export async function mediaFile(filename: string) {
+export const mediaFile = Effect.fn('mediaFile')(function* (filename: string) {
   if (!filename || filename.includes('/') || filename.includes('\\')) {
     throw new Error('Invalid media filename.')
   }
-  const data = await ankiInvoke<string | false>('retrieveMediaFile', { filename })
+  const data = yield* invokeEffect<string | false>('retrieveMediaFile', { filename })
   if (!data) return null
   return Uint8Array.from(atob(data), (character) => character.charCodeAt(0))
-}
+})

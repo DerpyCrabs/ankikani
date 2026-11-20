@@ -1,33 +1,17 @@
-import {
-  Match,
-  Show,
-  Switch,
-  batch,
-  createEffect,
-  createSignal,
-  onCleanup,
-  onMount,
-} from 'solid-js'
-import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/solid-query'
+import { Effect } from 'effect'
+import { available, component, observe, resourceError, view } from 'effectweb'
+import { queryCache, querySource } from '@effectweb/query'
+import { healthCheck, deckList, deckProfile, dashboardData } from './lib/resources'
 import { api } from './lib/api'
 import { configFromLegacy, reconcileConfig } from './lib/adapters'
-import {
-  configStorageKey,
-  deckStorageId,
-  profileKey,
-} from './lib/storage'
-import type {
-  DeckConfig,
-  DeckProfile,
-  DeckSummary,
-} from './lib/domain'
+import { configStorageKey, deckStorageId, profileKey } from './lib/storage'
+import type { DeckConfig, DeckProfile, DeckSummary } from './lib/domain'
 
 import { ConnectionScreen, DeckLoading, EmptyDeck, Header } from './components/AppShell'
 import { Dashboard } from './components/Dashboard'
 import { DeckSetup } from './components/DeckSetup'
 import { LessonSession, ReviewSession } from './components/StudySessions'
 import { SchedulingSetup } from './components/SchedulingSetup'
-import { createAppQueryClient, queries } from './lib/query'
 
 type View = 'dashboard' | 'mapping' | 'settings' | 'lesson' | 'review'
 
@@ -61,261 +45,213 @@ function loadConfig(deck: string, storageId: string): DeckConfig | null {
   }
 }
 
-function AppContent() {
-  const queryClient = useQueryClient()
-  const [connected, setConnected] = createSignal<boolean | null>(null)
-  const [connectionError, setConnectionError] = createSignal('')
-  const [decks, setDecks] = createSignal<DeckSummary[]>([])
-  const [profileName, setProfileName] = createSignal('')
-  const [deckName, setDeckName] = createSignal('')
-  const [storageId, setStorageId] = createSignal('')
-  const [profile, setProfile] = createSignal<DeckProfile | null>(null)
-  const [configuration, setConfiguration] = createSignal<DeckConfig | null>(null)
-  const [view, setView] = createSignal<View>(viewFromPath(window.location.pathname))
-  let connectRequest = 0
-  let configureRequest = 0
-  let profileSyncRequest = 0
-  const dashboard = useQuery(() => {
-    const deck = deckName(); const config = configuration()
-    return queries.dashboard(deck,config,view()==='dashboard' && config?.deckName===deck)
-  })
-
-  async function connect(
-    silent = false,
-    knownHealth?: Awaited<ReturnType<typeof api.health>>,
-  ) {
-    const request = ++connectRequest
-    if (!silent) setConnected(null)
-    setConnectionError('')
-    try {
-      const health = knownHealth ?? await queryClient.fetchQuery(queries.health())
-      const availableDecks = await queryClient.fetchQuery(queries.decks())
-      if (!health) throw new Error('Health check returned no data.')
-      if (request !== connectRequest) return
-      const activeProfile = health.profileName || 'Default'
-      const sameProfile = profileName() === activeProfile
-      const changedLoadedProfile = Boolean(profileName()) && !sameProfile
-      if (!sameProfile) {
-        configureRequest += 1
-        queryClient.removeQueries({predicate:(query)=>query.queryKey[0]!=='health'})
-      }
-      let selected = sameProfile
-        ? deckName()
-        : localStorage.getItem(profileKey(activeProfile)) ?? ''
-      if (!availableDecks.some((deck) => deck.name === selected)) {
-        selected =
-          availableDecks.find((deck) => deck.name !== 'Default')?.name ??
-          availableDecks[0]?.name ??
-          ''
-      }
-      batch(() => {
-        if (!sameProfile) {
-          setProfile(null)
-          setConfiguration(null)
-          setStorageId('')
-        }
-        setDecks(availableDecks)
-        setProfileName(activeProfile)
-        setDeckName(selected)
-        setConnected(true)
-      })
-      if (changedLoadedProfile) navigate('dashboard')
-    } catch (error) {
-      if (request !== connectRequest) return
-      if (silent) return
-      setConnected(false)
-      setConnectionError(
-        error instanceof Error ? error.message : 'Could not connect to Anki.',
-      )
-    }
+function initialState() {
+  return {
+    connected: null as boolean | null,
+    error: '',
+    decks: [] as DeckSummary[],
+    profileName: '',
+    deckName: '',
+    storageId: '',
+    profile: null as DeckProfile | null,
+    configuration: null as DeckConfig | null,
+    screen: viewFromPath(window.location.pathname),
   }
+}
 
-  async function configureDeck(selectedDeck: string) {
-    if (!selectedDeck) return
-    const request = ++configureRequest
-    const activeProfile = profileName()
-    setConnectionError('')
-    localStorage.setItem(profileKey(activeProfile), selectedDeck)
-    setProfile(null)
-    setConfiguration(null)
-    setStorageId('')
-    try {
-      const nextProfile = await queryClient.fetchQuery(queries.profile(selectedDeck))
-      if (request !== configureRequest || profileName() !== activeProfile) return
-      const nextStorageId = deckStorageId(activeProfile, nextProfile)
-      setProfile(nextProfile)
-      setStorageId(nextStorageId)
-      const stored = loadConfig(selectedDeck, nextStorageId)
-      const suggested =
-        nextProfile.suggestedConfig ??
-        (nextProfile.suggestedMapping
-          ? configFromLegacy(selectedDeck, nextProfile.suggestedMapping)
-          : null)
-      const nextConfig = reconcileConfig(stored, suggested)
-      if (nextConfig) {
-        setConfiguration(nextConfig)
-        if (!stored || JSON.stringify(stored) !== JSON.stringify(nextConfig)) {
-          localStorage.setItem(
-            configStorageKey(nextStorageId),
-            JSON.stringify(nextConfig),
-          )
-        }
-      } else if (nextProfile.modelNames.length) {
-        navigate('mapping', true)
-      }
-    } catch (error) {
-      if (request !== configureRequest || profileName() !== activeProfile) return
-      setConnectionError(
-        error instanceof Error ? error.message : 'Could not read deck profile.',
-      )
-    }
-  }
+export default component({ init: initialState }, (owner) => {
+  const cache = owner.own(queryCache({ unused: 'cancel' }))
 
-  function selectDeck(name: string) {
-    if (name === deckName()) return
-    setDeckName(name)
-    navigate('dashboard')
-  }
-
-  function navigate(nextView: View, replace = false) {
-    const path = VIEW_PATHS[nextView]
-    if (window.location.pathname !== path) {
+  function navigate(screen: View, replace = false) {
+    const path = VIEW_PATHS[screen]
+    if (window.location.pathname !== path)
       window.history[replace ? 'replaceState' : 'pushState']({}, '', path)
-    }
-    setView(nextView)
+    owner.patch({ screen })
   }
 
-  function saveConfiguration(nextConfig: DeckConfig) {
-    const customized = { ...nextConfig, customized: true }
-    localStorage.setItem(
-      configStorageKey(storageId()),
-      JSON.stringify(customized),
+  function configure(deck: string) {
+    const { profileName } = owner.read()
+    localStorage.setItem(profileKey(profileName), deck)
+    owner.patch({ deckName: deck, profile: null, configuration: null, storageId: '', error: '' })
+    owner.run(
+      'configure',
+      cache.prefetch(deckProfile, deck).pipe(
+        Effect.match({
+          onFailure: (error) => owner.patch({ error: error.message }),
+          onSuccess: (profile) => {
+            const storageId = deckStorageId(profileName, profile)
+            const stored = loadConfig(deck, storageId)
+            const suggested =
+              profile.suggestedConfig ??
+              (profile.suggestedMapping ? configFromLegacy(deck, profile.suggestedMapping) : null)
+            const configuration = reconcileConfig(stored, suggested)
+            if (configuration && JSON.stringify(configuration) !== JSON.stringify(stored)) {
+              localStorage.setItem(configStorageKey(storageId), JSON.stringify(configuration))
+            }
+            owner.patch({ profile, storageId, configuration })
+            if (!configuration && profile.modelNames.length) navigate('mapping', true)
+          },
+        }),
+      ),
+      'replace',
     )
-    setConfiguration(customized)
+  }
+
+  function connect(silent = false, knownHealth?: Effect.Success<ReturnType<typeof api.health>>) {
+    if (!silent) owner.patch({ connected: null, error: '' })
+    owner.run(
+      'connect',
+      Effect.gen(function* () {
+        const health = knownHealth ?? (yield* cache.prefetch(healthCheck, true, { refresh: true }))
+        const decks = yield* cache.prefetch(deckList, true, { refresh: true })
+        if (!health) return yield* Effect.fail(new Error('Health check returned no data.'))
+        const profileName = health.profileName || 'Default'
+        const old = owner.read()
+        const changed = old.profileName !== profileName
+        if (changed) {
+          owner.cancel('configure')
+          cache.resetResources()
+        }
+        const previous = changed ? localStorage.getItem(profileKey(profileName)) : old.deckName
+        const deckName =
+          decks.find((deck) => deck.name === previous)?.name ??
+          decks.find((deck) => deck.name !== 'Default')?.name ??
+          decks[0]?.name ??
+          ''
+        if (changed && old.profileName) navigate('dashboard')
+        owner.patch({
+          profileName,
+          decks,
+          deckName,
+          connected: true,
+          error: '',
+          ...(changed ? { configuration: null, profile: null, storageId: '' } : {}),
+        })
+        if (deckName && (changed || old.deckName !== deckName || !old.profile)) configure(deckName)
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            if (!silent) owner.patch({ connected: false, error: error.message })
+          }),
+        ),
+      ),
+      'replace',
+    )
+  }
+
+  function syncProfile() {
+    if (!owner.read().connected) return
+    owner.run(
+      'sync-profile',
+      cache.prefetch(healthCheck, true, { refresh: true }).pipe(
+        Effect.tap((health) =>
+          Effect.sync(() => {
+            if ((health.profileName || 'Default') !== owner.read().profileName) connect(true, health)
+          }),
+        ),
+        Effect.ignore,
+      ),
+      'replace',
+    )
+  }
+  const onPop = () => owner.patch({ screen: viewFromPath(window.location.pathname) })
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') syncProfile()
+  }
+  window.addEventListener('popstate', onPop)
+  window.addEventListener('focus', syncProfile)
+  document.addEventListener('visibilitychange', onVisible)
+  owner.own(() => {
+    window.removeEventListener('popstate', onPop)
+    window.removeEventListener('focus', syncProfile)
+    document.removeEventListener('visibilitychange', onVisible)
+  })
+  connect()
+
+  function saveConfig(next: DeckConfig) {
+    const configuration = { ...next, customized: true }
+    localStorage.setItem(configStorageKey(owner.read().storageId), JSON.stringify(configuration))
+    owner.patch({ configuration })
     navigate('dashboard')
   }
 
-  createEffect(() => {
-    if (connected() && deckName()) void configureDeck(deckName())
-  })
-
-  onMount(() => {
-    const onPopState = () => setView(viewFromPath(window.location.pathname))
-    const syncActiveProfile = async () => {
-      if (connected() !== true) return
-      const request = ++profileSyncRequest
-      try {
-        const health = await queryClient.fetchQuery(queries.health())
-        if (request !== profileSyncRequest) return
-        const activeProfile = health.profileName || 'Default'
-        if (activeProfile !== profileName()) {
-          await connect(true, health)
-        }
-      } catch {
-        // Keep current screen during transient AnkiConnect failures.
+  return view((model) => {
+    const { connected, decks, error, deckName, profile, configuration, screen, storageId } = model
+    const home = () => navigate('dashboard')
+    function content() {
+      if (!profile) return <DeckLoading error={error} retry={() => configure(deckName)} />
+      if (!profile.modelNames.length) return <EmptyDeck deckName={deckName} />
+      if (screen === 'mapping' || (!configuration && screen !== 'settings')) {
+        return (
+          <DeckSetup
+            profile={profile}
+            existing={configuration}
+            onSave={saveConfig}
+            onCancel={configuration ? home : undefined}
+          />
+        )
       }
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void syncActiveProfile()
-    }
-    window.addEventListener('popstate', onPopState)
-    window.addEventListener('focus', syncActiveProfile)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    onCleanup(() => {
-      window.removeEventListener('popstate', onPopState)
-      window.removeEventListener('focus', syncActiveProfile)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    })
-    void connect()
-  })
-
-  return (
-    <div class="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
-      <Show when={connected() === true} fallback={<ConnectionScreen connected={connected()} error={connectionError()} retry={connect} />}>
-        <Header
-          decks={decks()}
-          selected={deckName()}
-          onSelect={selectDeck}
-          onDashboard={() => navigate('dashboard')}
+      const args = { deck: deckName, config: configuration! }
+      const refresh = () => cache.invalidateQuery(dashboardData, args)
+      if (screen === 'settings')
+        return (
+          <SchedulingSetup
+            cache={cache}
+            deckName={deckName}
+            onSaved={() => {
+              refresh()
+              home()
+            }}
+            onClose={home}
+          />
+        )
+      const session = {
+        cache,
+        deckName,
+        configuration: configuration!,
+        storageId,
+        onGraded: refresh,
+        onExit: home,
+      }
+      if (screen === 'lesson') return <LessonSession {...session} />
+      if (screen === 'review') return <ReviewSession {...session} />
+      return observe(querySource(cache, dashboardData, args), (result) => (
+        <Dashboard
+          cache={cache}
+          data={available(result)}
+          loading={!available(result) && !resourceError(result)}
+          error={resourceError(result)}
+          deckName={deckName}
+          configuration={configuration!}
+          onLessons={() => navigate('lesson')}
+          onReviews={() => navigate('review')}
+          onConfigure={() => navigate('mapping')}
+          onScheduling={() => navigate('settings')}
+          onRetry={refresh}
         />
-
-        <main class="mx-auto w-full max-w-[1440px] px-4 pb-16 pt-7 sm:px-6 lg:px-10">
-          <Show
-            when={profile()}
-            fallback={
-              <DeckLoading
-                error={connectionError()}
-                retry={() => void configureDeck(deckName())}
-              />
-            }
-          >
-            <Show
-              when={profile()!.modelNames.length}
-              fallback={<EmptyDeck deckName={deckName()} />}
-            >
-              <Switch>
-                <Match when={view() === 'mapping' && profile()}>
-                  <DeckSetup
-                    profile={profile()!}
-                    existing={configuration()}
-                    onSave={saveConfiguration}
-                    onCancel={configuration() ? () => navigate('dashboard') : undefined}
-                  />
-                </Match>
-                <Match when={view() === 'settings'}>
-                  <SchedulingSetup deckName={deckName()} onClose={() => navigate('dashboard')} onSaved={() => { navigate('dashboard'); void dashboard.refetch() }} />
-                </Match>
-                <Match when={view() === 'lesson' && configuration() && storageId()}>
-                  <LessonSession
-                    deckName={deckName()}
-                    storageId={storageId()}
-                    configuration={configuration()!}
-                    onExit={() => {
-                      navigate('dashboard')
-                    }}
-                  />
-                </Match>
-                <Match when={view() === 'review' && configuration() && storageId()}>
-                  <ReviewSession
-                    deckName={deckName()}
-                    storageId={storageId()}
-                    configuration={configuration()!}
-                    onExit={() => {
-                      navigate('dashboard')
-                    }}
-                  />
-                </Match>
-                <Match when={configuration()}>
-                  <Dashboard
-                    data={dashboard.data}
-                    loading={dashboard.isPending}
-                    error={dashboard.error}
-                    deckName={deckName()}
-                    configuration={configuration()!}
-                    onLessons={() => navigate('lesson')}
-                    onReviews={() => navigate('review')}
-                    onConfigure={() => navigate('mapping')}
-                    onScheduling={() => navigate('settings')}
-                    onRetry={() => void dashboard.refetch()}
-                  />
-                </Match>
-                <Match when={!configuration() && profile()}>
-                  <DeckSetup
-                    profile={profile()!}
-                    existing={null}
-                    onSave={saveConfiguration}
-                  />
-                </Match>
-              </Switch>
-            </Show>
-          </Show>
-        </main>
-      </Show>
-    </div>
-  )
-}
-
-export default function App() {
-  const client = createAppQueryClient()
-  return <QueryClientProvider client={client}><AppContent /></QueryClientProvider>
-}
+      ))
+    }
+    return (
+      <div class="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
+        {connected ? (
+          <>
+            <Header
+              decks={decks}
+              selected={deckName}
+              onDashboard={home}
+              onSelect={(deck) => {
+                if (deck !== deckName) {
+                  home()
+                  configure(deck)
+                }
+              }}
+            />
+            <main class="mx-auto w-full max-w-[1440px] px-4 pb-16 pt-7 sm:px-6 lg:px-10">{content()}</main>
+          </>
+        ) : (
+          <ConnectionScreen connected={connected} error={error} retry={() => connect()} />
+        )}
+      </div>
+    )
+  })
+})

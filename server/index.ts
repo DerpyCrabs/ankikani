@@ -1,3 +1,5 @@
+import { Cause, Effect } from 'effect'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 import {
@@ -20,7 +22,7 @@ import { importPackageBytes } from './package-import'
 import { listCollectionBackups, restoreCollectionBackup } from './collection-import'
 
 const PORT = Number(process.env.PORT ?? 3001)
-const DIST = path.resolve(import.meta.dir, '..', 'dist')
+const DIST = fileURLToPath(new URL('../dist', import.meta.url))
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, {
@@ -29,12 +31,12 @@ function json(data: unknown, status = 200): Response {
   })
 }
 
-async function requestJson<T>(request: Request): Promise<T> {
+function requestJson<T>(request: Request) {
   const contentType = request.headers.get('content-type') ?? ''
   if (!contentType.includes('application/json')) {
-    throw new Error('Expected application/json request.')
+    return Effect.fail(new Error('Expected application/json request.'))
   }
-  return request.json() as Promise<T>
+  return fromIO(() => request.json() as Promise<T>)
 }
 
 function contentType(filename: string) {
@@ -55,14 +57,18 @@ function contentType(filename: string) {
   )
 }
 
-async function api(request: Request, url: URL): Promise<Response | null> {
+function fromIO<T>(operation: () => T | Promise<T>) {
+  return Effect.tryPromise({ try: async () => operation(), catch: (cause) => cause })
+}
+
+const api = Effect.fn('handleApiRequest')(function* (request: Request, url: URL) {
   if (!url.pathname.startsWith('/api/')) return null
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
-    return json(await providerHealth())
+    return json(yield* providerHealth())
   }
   if (url.pathname === '/api/decks' && request.method === 'GET') {
-    return json(await listDecks())
+    return json(yield* listDecks())
   }
   if (url.pathname === '/api/settings' && request.method === 'GET') {
     const deck = url.searchParams.get('deck')
@@ -70,65 +76,67 @@ async function api(request: Request, url: URL): Promise<Response | null> {
     return json(getSettings(deck))
   }
   if (url.pathname === '/api/settings' && request.method === 'PUT') {
-    const body = await requestJson<{ deck: string; settings: SchedulingSettings }>(request)
+    const body = yield* requestJson<{ deck: string; settings: SchedulingSettings }>(request)
     return json(updateSettings(body.deck, body.settings))
   }
   if (url.pathname === '/api/import' && request.method === 'POST') {
     const length = Number(request.headers.get('content-length') ?? 0)
     if (length > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
-    const form = await request.formData()
+    const form = yield* fromIO(() => request.formData())
     const upload = form.get('package')
     if (!(upload instanceof File)) return json({ error: 'Missing package file.' }, 400)
     const extension = upload.name.toLowerCase().endsWith('.colpkg') ? 'colpkg' : upload.name.toLowerCase().endsWith('.apkg') ? 'apkg' : null
     if (!extension) return json({ error: 'Choose an .apkg or .colpkg file.' }, 400)
     if (upload.size > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
-    return json(await importPackageBytes(new Uint8Array(await upload.arrayBuffer()),upload.name,extension))
+    const bytes = yield* fromIO(() => upload.arrayBuffer())
+    return json(yield* fromIO(() => importPackageBytes(new Uint8Array(bytes), upload.name, extension)))
   }
   if (url.pathname === '/api/backups' && request.method === 'GET') return json(listCollectionBackups())
   if (url.pathname === '/api/backups/restore' && request.method === 'POST') {
-    const body = await requestJson<{name:string}>(request)
+    const body = yield* requestJson<{name:string}>(request)
     return json({backup:restoreCollectionBackup(body.name)})
   }
   if (url.pathname === '/api/profile' && request.method === 'GET') {
     const deck = url.searchParams.get('deck')
     if (!deck) return json({ error: 'Missing deck.' }, 400)
-    return json(await getDeckProfile(deck))
+    return json(yield* getDeckProfile(deck))
   }
   if (url.pathname === '/api/dashboard' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
-    return json(await getDashboard(body.deck, body.config))
+    const body = yield* requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(yield* getDashboard(body.deck, body.config))
   }
   if (url.pathname === '/api/sessions/reviews' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
-    return json(await getReviewSession(body.deck, body.config))
+    const body = yield* requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(yield* getReviewSession(body.deck, body.config))
   }
   if (url.pathname === '/api/sessions/lessons' && request.method === 'POST') {
-    const body = await requestJson<{ deck: string; config: StudyConfig }>(request)
-    return json(await getLessonSession(body.deck, body.config))
+    const body = yield* requestJson<{ deck: string; config: StudyConfig }>(request)
+    return json(yield* getLessonSession(body.deck, body.config))
   }
   if (url.pathname === '/api/cards' && request.method === 'POST') {
-    const body = await requestJson<{
+    const body = yield* requestJson<{
       deck: string
       cardIds: number[]
       config: StudyConfig
     }>(request)
     if (body.cardIds.length > 500) return json({ error: 'Too many cards.' }, 400)
-    return json(await getCards(body.cardIds, body.deck, body.config))
+    return json(yield* getCards(body.cardIds, body.deck, body.config))
   }
   if (url.pathname === '/api/answer' && request.method === 'POST') {
-    const body = await requestJson<{
+    const body = yield* requestJson<{
       cardId: number
       ease: number
       requestId?: string
     }>(request)
-    if (body.ease !== 1 && body.ease !== 3) {
+    const { cardId, ease, requestId } = body
+    if (ease !== 1 && ease !== 3) {
       return json({ error: 'Only Again (1) and Good (3) are allowed.' }, 400)
     }
-    return json(await answerCard(body.cardId, body.ease, body.requestId))
+    return json(yield* answerCard(cardId, ease, requestId))
   }
   if (url.pathname === '/api/media' && request.method === 'GET') {
     const filename = url.searchParams.get('filename') ?? ''
-    const bytes = await mediaFile(filename)
+    const bytes = yield* mediaFile(filename)
     if (!bytes) return json({ error: 'Media not found.' }, 404)
     return new Response(bytes, {
       headers: {
@@ -141,24 +149,21 @@ async function api(request: Request, url: URL): Promise<Response | null> {
   }
 
   return json({ error: 'Not found.' }, 404)
-}
+})
 
 export async function handleApiRequest(
   request: Request,
 ): Promise<Response | null> {
-  try {
-    return await api(request, new URL(request.url))
-  } catch (error) {
-    const unavailable = error instanceof AnkiUnavailableError
-    const message = error instanceof Error ? error.message : 'Unexpected error.'
-    return json(
-      {
-        error: message,
+  return Effect.runPromise(api(request, new URL(request.url)).pipe(
+    Effect.catchCause((cause) => {
+      const error = Cause.squash(cause)
+      const unavailable = error instanceof AnkiUnavailableError
+      return Effect.succeed(json({
+        error: error instanceof Error ? error.message : 'Unexpected error.',
         code: unavailable ? 'ANKI_UNAVAILABLE' : 'REQUEST_FAILED',
-      },
-      unavailable ? 503 : 500,
-    )
-  }
+      }, unavailable ? 503 : 500))
+    }),
+  ))
 }
 
 async function serveStatic(url: URL): Promise<Response> {

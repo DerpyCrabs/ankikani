@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import { Database } from 'bun:sqlite'
 import { closeSync, copyFileSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -36,6 +37,20 @@ export function beginCollectionImport() {
       try { if ((JSON.parse(readFileSync(lockPath(),'utf8')) as {token?:string}).token===token) unlinkSync(lockPath()) } catch {}
     }
   } }
+}
+
+// Keep the import lock until activation finishes. Close the staging database before renaming it.
+export const collectionImport = Effect.acquireRelease(
+  Effect.sync(beginCollectionImport),
+  state => Effect.sync(state.release),
+)
+
+export function withStagingDatabase<A, E, R>(staging: string, write: (db: Database) => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => new Database(staging, { create: true })),
+    write,
+    db => Effect.sync(() => db.close()),
+  )
 }
 
 export function validateCollection(target:Database, expected:CollectionCounts) {

@@ -288,7 +288,7 @@ export function getOwnedDashboard(deckName: string, config: StudyConfig): Dashbo
 function fsrsCard(row: CardRow): Card {
   const state = row.type === 0 ? State.New : row.type === 1 ? State.Learning : row.type === 3 ? State.Relearning : State.Review
   return { ...createEmptyCard(new Date(row.due_at)), state, due: new Date(row.due_at), stability: row.stability || Math.max(.1,row.interval),
-    difficulty: row.difficulty || 5.5, elapsed_days: 0, scheduled_days: row.scheduled_days || row.interval,
+    difficulty: row.difficulty || 5.5, scheduled_days: row.scheduled_days || row.interval,
     learning_steps: row.learning_steps, reps: row.reps, lapses: row.lapses,
     last_review: row.last_review ? new Date(row.last_review) : undefined }
 }

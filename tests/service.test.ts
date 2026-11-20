@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AnkiCardInfo } from '../src/lib/domain'
 
@@ -7,8 +8,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../server/anki', () => ({
-  ankiInvoke: mocks.invoke,
-  ankiMulti: mocks.multi,
+  invokeEffect: (...args: unknown[]) => Effect.tryPromise({ try: () => mocks.invoke(...args), catch: cause => cause }),
+  multiEffect: (...args: unknown[]) => Effect.promise(() => mocks.multi(...args)),
 }))
 
 import {
@@ -69,7 +70,7 @@ describe('deck API', () => {
       German: 2,
       'German::Chapter 1': 3,
     })
-    await expect(listDecks()).resolves.toEqual([
+    await expect(Effect.runPromise(listDecks())).resolves.toEqual([
       { id: 1, name: 'Default', supported: true, modelNames: [], subdeckCount: 0 },
       { id: 2, name: 'German', supported: true, modelNames: [], subdeckCount: 1 },
     ])
@@ -103,7 +104,7 @@ describe('lesson integration', () => {
       throw new Error(`Unexpected action ${action}`)
     })
 
-    const lesson = await getLessonSession('German', GOETHE_MAPPING)
+    const lesson = await Effect.runPromise(getLessonSession('German', GOETHE_MAPPING))
     expect(lesson.items).toHaveLength(2)
     expect(lesson.quizCards).toHaveLength(4)
     expect(new Set(lesson.quizCards.map((card) => card.noteId))).toEqual(
@@ -122,7 +123,7 @@ describe('lesson integration', () => {
         total_in_deck: 4,
       },
     })
-    await expect(getLessonSession('German', GOETHE_MAPPING)).resolves.toEqual({
+    await expect(Effect.runPromise(getLessonSession('German', GOETHE_MAPPING))).resolves.toEqual({
       deckName: 'German',
       items: [],
       quizCards: [],
@@ -159,7 +160,7 @@ describe('lesson integration', () => {
       },
     )
 
-    const lesson = await getLessonSession('German', GOETHE_MAPPING)
+    const lesson = await Effect.runPromise(getLessonSession('German', GOETHE_MAPPING))
     expect(lesson.items).toHaveLength(1)
     expect(lesson.quizCards).toHaveLength(2)
   })
@@ -177,7 +178,7 @@ describe('card loading', () => {
     )
     const ids = Array.from({ length: 501 }, (_, index) => index + 1)
 
-    await expect(getCards(ids, 'German', GOETHE_MAPPING)).resolves.toHaveLength(
+    await expect(Effect.runPromise(getCards(ids, 'German', GOETHE_MAPPING))).resolves.toHaveLength(
       501,
     )
     const cardCalls = mocks.invoke.mock.calls.filter(
@@ -215,7 +216,7 @@ describe('review integration', () => {
     })
     mocks.multi.mockResolvedValue([[1], [2, 3, 99]])
 
-    const session = await getReviewSession('German', GOETHE_MAPPING)
+    const session = await Effect.runPromise(getReviewSession('German', GOETHE_MAPPING))
     expect(session.cards.map((card) => card.cardId)).toEqual([1, 3, 2])
     expect(session.cards).toHaveLength(3)
   })
@@ -224,7 +225,7 @@ describe('review integration', () => {
 describe('grade integration', () => {
   it('sends only the requested card and allowed grade', async () => {
     mocks.invoke.mockResolvedValue([true])
-    await expect(answerCard(42, 3)).resolves.toEqual({
+    await expect(Effect.runPromise(answerCard(42, 3))).resolves.toEqual({
       saved: true,
       cardId: 42,
       ease: 3,
@@ -236,7 +237,7 @@ describe('grade integration', () => {
 
   it('marks missing stale cards without trapping the session', async () => {
     mocks.invoke.mockResolvedValue([false])
-    await expect(answerCard(42, 1)).resolves.toEqual({
+    await expect(Effect.runPromise(answerCard(42, 1))).resolves.toEqual({
       saved: false,
       stale: true,
       cardId: 42,
@@ -246,8 +247,11 @@ describe('grade integration', () => {
 
   it('deduplicates a repeated grading request', async () => {
     mocks.invoke.mockResolvedValue([true])
-    await answerCard(42, 3, 'same-request')
-    await answerCard(42, 3, 'same-request')
+    await Promise.all([
+      Effect.runPromise(answerCard(42, 3, 'same-request')),
+      Effect.runPromise(answerCard(42, 3, 'same-request')),
+    ])
+    await Effect.runPromise(answerCard(42, 3, 'same-request'))
 
     expect(mocks.invoke).toHaveBeenCalledTimes(1)
   })
@@ -288,7 +292,7 @@ describe('dashboard integration', () => {
     })
     mocks.multi.mockResolvedValue([[], [], [], [], [], [], []])
 
-    const result = await getDashboard('German', GOETHE_MAPPING)
+    const result = await Effect.runPromise(getDashboard('German', GOETHE_MAPPING))
     expect(result.completedToday).toBe(1)
     expect(result.completedYesterday).toBe(1)
     expect(result.currentStreak).toBe(2)

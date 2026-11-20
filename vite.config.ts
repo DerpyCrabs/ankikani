@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
-import solid from 'vite-plugin-solid'
+import { effectweb } from '@effectweb/compiler/vite'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [solid(), tailwindcss()],
+  plugins: [effectweb(), tailwindcss()],
   server: {
     watch: {
       ignored: [

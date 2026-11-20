@@ -1,9 +1,10 @@
 import { defineConfig } from 'vitest/config'
-import solid from 'vite-plugin-solid'
+import { effectweb } from '@effectweb/compiler/vite'
 
 export default defineConfig({
-  plugins: [solid({ hot: false })],
+  plugins: [effectweb()],
   test: {
+    pool: 'threads',
     environment: 'node',
     include: ['tests/**/*.test.{ts,tsx}'],
     setupFiles: ['./tests/setup.ts'],

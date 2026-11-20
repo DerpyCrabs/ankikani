@@ -20,3 +20,15 @@ if (typeof window !== 'undefined') {
     value: storage,
   })
 }
+
+if (typeof window !== 'undefined') {
+  // jsdom has no layout engine or native dialog top layer.
+  window.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  const dialog = window.HTMLDialogElement.prototype
+  dialog.showModal ??= function () { this.open = true }
+  dialog.close ??= function () { this.open = false }
+}

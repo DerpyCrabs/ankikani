@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
+import { Effect } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { playAudioSequence, stopAudioPlayback } from '../src/components/StudyAudio'
+import { playAudioSequence, stopAudioPlayback } from '../src/components/playback'
 
 class FakeAudio {
   static sources: string[] = []
@@ -35,7 +36,7 @@ describe('study audio', () => {
     vi.stubGlobal('Audio', FakeAudio)
 
     await expect(
-      playAudioSequence(['broken-answer.mp3'], ['working-prompt.mp3']),
+      Effect.runPromise(playAudioSequence(['broken-answer.mp3'], ['working-prompt.mp3'])),
     ).resolves.toBe('played')
     expect(FakeAudio.sources).toEqual([
       '/api/media?filename=broken-answer.mp3',
