@@ -9,9 +9,15 @@ import {
   getReviewSession,
   listDecks,
   mediaFile,
-} from './service'
-import { ankiHealth, AnkiUnavailableError } from './anki'
+  providerHealth,
+  getSettings,
+  updateSettings,
+} from './provider'
+import { AnkiUnavailableError } from './anki'
 import type { StudyConfig } from '../src/lib/domain'
+import type { SchedulingSettings } from '../src/lib/domain'
+import { importPackageBytes } from './package-import'
+import { listCollectionBackups, restoreCollectionBackup } from './collection-import'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const DIST = path.resolve(import.meta.dir, '..', 'dist')
@@ -53,10 +59,35 @@ async function api(request: Request, url: URL): Promise<Response | null> {
   if (!url.pathname.startsWith('/api/')) return null
 
   if (url.pathname === '/api/health' && request.method === 'GET') {
-    return json(await ankiHealth())
+    return json(await providerHealth())
   }
   if (url.pathname === '/api/decks' && request.method === 'GET') {
     return json(await listDecks())
+  }
+  if (url.pathname === '/api/settings' && request.method === 'GET') {
+    const deck = url.searchParams.get('deck')
+    if (!deck) return json({ error: 'Missing deck.' }, 400)
+    return json(getSettings(deck))
+  }
+  if (url.pathname === '/api/settings' && request.method === 'PUT') {
+    const body = await requestJson<{ deck: string; settings: SchedulingSettings }>(request)
+    return json(updateSettings(body.deck, body.settings))
+  }
+  if (url.pathname === '/api/import' && request.method === 'POST') {
+    const length = Number(request.headers.get('content-length') ?? 0)
+    if (length > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
+    const form = await request.formData()
+    const upload = form.get('package')
+    if (!(upload instanceof File)) return json({ error: 'Missing package file.' }, 400)
+    const extension = upload.name.toLowerCase().endsWith('.colpkg') ? 'colpkg' : upload.name.toLowerCase().endsWith('.apkg') ? 'apkg' : null
+    if (!extension) return json({ error: 'Choose an .apkg or .colpkg file.' }, 400)
+    if (upload.size > 1024*1024*1024) return json({ error: 'Package files larger than 1 GB are not supported.' }, 413)
+    return json(await importPackageBytes(new Uint8Array(await upload.arrayBuffer()),upload.name,extension))
+  }
+  if (url.pathname === '/api/backups' && request.method === 'GET') return json(listCollectionBackups())
+  if (url.pathname === '/api/backups/restore' && request.method === 'POST') {
+    const body = await requestJson<{name:string}>(request)
+    return json({backup:restoreCollectionBackup(body.name)})
   }
   if (url.pathname === '/api/profile' && request.method === 'GET') {
     const deck = url.searchParams.get('deck')

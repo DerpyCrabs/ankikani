@@ -6,6 +6,7 @@ import type {
   LessonPayload,
   SessionPayload,
   StudyCard,
+  SchedulingSettings,
 } from './domain'
 
 export class ApiError extends Error {
@@ -20,9 +21,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs = 8_000): Promise<T> {
   const controller = new AbortController()
-  const timeout = globalThis.setTimeout(() => controller.abort(), 8_000)
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort(), timeoutMs) : undefined
   let response: Response
   try {
     response = await fetch(path, {
@@ -31,11 +32,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError('AnkiConnect did not respond in time.', 'TIMEOUT', 408)
+      throw new ApiError('The request did not finish in time.', 'TIMEOUT', 408)
     }
-    throw new ApiError('AnkiConnect connection was interrupted.', 'NETWORK')
+    throw new ApiError('The connection was interrupted.', 'NETWORK')
   } finally {
-    globalThis.clearTimeout(timeout)
+    if (timeout) globalThis.clearTimeout(timeout)
   }
   const contentType = response.headers.get('content-type') ?? ''
   const body = contentType.includes('application/json')
@@ -52,32 +53,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-async function retryable<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation()
-  } catch (error) {
-    const retry =
-      !(error instanceof ApiError) ||
-      error.code === 'NETWORK' ||
-      error.code === 'TIMEOUT' ||
-      [502, 503, 504].includes(error.status ?? 0)
-    if (!retry) throw error
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 250))
-    return operation()
-  }
-}
-
-function post<T>(path: string, body: unknown, canRetry = true) {
-  const operation = () => request<T>(path, {
+function post<T>(path: string, body: unknown, signal?:AbortSignal) {
+  return request<T>(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
-  return canRetry ? retryable(operation) : operation()
 }
 
-function get<T>(path: string) {
-  return retryable(() => request<T>(path))
+function get<T>(path: string, signal?:AbortSignal) {
+  return request<T>(path,{signal})
 }
 
 function answerPost<T>(path: string, body: unknown) {
@@ -88,27 +74,46 @@ function answerPost<T>(path: string, body: unknown) {
   })
 }
 
+export type PackageImportReport = {file:string;kind:'apkg'|'colpkg';decks:number;notes:number;cards:number;reviews:number;media:number;compatibility:Array<{modelName:string;status:string;reason:string}>;backup:string|null}
+
 export const api = {
-  health: () =>
+  health: (signal?:AbortSignal) =>
     get<{
       connected: boolean
       version: number
       endpoint: string
       profileName: string
     }>(
-      '/api/health',
+      '/api/health', signal,
     ),
-  decks: () => get<DeckSummary[]>('/api/decks'),
-  profile: (deck: string) =>
-    get<DeckProfile>(`/api/profile?deck=${encodeURIComponent(deck)}`),
-  dashboard: (deck: string, config: StudyConfig) =>
-    post<DashboardData>('/api/dashboard', { deck, config }),
-  reviews: (deck: string, config: StudyConfig) =>
-    post<SessionPayload>('/api/sessions/reviews', { deck, config }),
-  lessons: (deck: string, config: StudyConfig) =>
-    post<LessonPayload>('/api/sessions/lessons', { deck, config }),
-  cards: (deck: string, cardIds: number[], config: StudyConfig) =>
-    post<StudyCard[]>('/api/cards', { deck, cardIds, config }),
+  decks: (signal?:AbortSignal) => get<DeckSummary[]>('/api/decks',signal),
+  profile: (deck: string, signal?:AbortSignal) =>
+    get<DeckProfile>(`/api/profile?deck=${encodeURIComponent(deck)}`,signal),
+  settings: (deck: string, signal?:AbortSignal) =>
+    get<SchedulingSettings>(`/api/settings?deck=${encodeURIComponent(deck)}`,signal),
+  updateSettings: (deck: string, settings: SchedulingSettings) =>
+    request<SchedulingSettings>('/api/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deck, settings }),
+    }),
+  importPackage: (file: File) => {
+    const form = new FormData()
+    form.set('package', file)
+    return request<PackageImportReport>('/api/import',{method:'POST',body:form},0)
+  },
+  backups: (signal?:AbortSignal) => get<string[]>('/api/backups',signal),
+  restoreBackup: (name:string) => request<{backup:string|null}>('/api/backups/restore',{
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name}),
+  },0),
+  dashboard: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
+    post<DashboardData>('/api/dashboard', { deck, config },signal),
+  reviews: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
+    post<SessionPayload>('/api/sessions/reviews', { deck, config },signal),
+  lessons: (deck: string, config: StudyConfig, signal?:AbortSignal) =>
+    post<LessonPayload>('/api/sessions/lessons', { deck, config },signal),
+  cards: (deck: string, cardIds: number[], config: StudyConfig, signal?:AbortSignal) =>
+    post<StudyCard[]>('/api/cards', { deck, cardIds, config },signal),
   answer: (cardId: number, ease: 1 | 3, requestId: string) =>
     answerPost<{
       saved: boolean

@@ -5,6 +5,7 @@ export async function loadCards(
   deckName: string,
   cardIds: number[],
   configuration: StudyConfig,
+  signal?:AbortSignal,
 ): Promise<StudyCard[]> {
   const cards: StudyCard[] = []
   for (let offset = 0; offset < cardIds.length; offset += 500) {
@@ -13,6 +14,7 @@ export async function loadCards(
         deckName,
         cardIds.slice(offset, offset + 500),
         configuration,
+        signal,
       )),
     )
   }

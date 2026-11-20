@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => ({
   lessons: vi.fn(),
   cards: vi.fn(),
   answer: vi.fn(),
+  importPackage: vi.fn(),
+  backups: vi.fn(),
+  restoreBackup: vi.fn(),
+  settings: vi.fn(),
+  updateSettings: vi.fn(),
 }))
 
 vi.mock('../src/lib/api', () => ({
@@ -52,7 +57,7 @@ const dashboard: DashboardData = {
   completedYesterday: 4,
   currentStreak: 2,
   bestStreak: 5,
-  next24Hours: 6,
+  dueToday: 6,
   forecast: Array.from({ length: 7 }, (_, index) => ({
     date: `2026-07-${`${28 + index}`.padStart(2, '0')}`,
     label: index ? `Day ${index}` : 'Today',
@@ -156,6 +161,11 @@ beforeEach(() => {
   })
   mocks.cards.mockReset().mockResolvedValue([])
   mocks.answer.mockReset().mockResolvedValue({ saved: true, cardId: 1, ease: 3 })
+  mocks.importPackage.mockReset()
+  mocks.backups.mockReset().mockResolvedValue([])
+  mocks.restoreBackup.mockReset()
+  mocks.settings.mockReset().mockResolvedValue({newPerDay:20,reviewsPerDay:200,desiredRetention:.9,maximumInterval:36500,learningSteps:['1m','10m'],relearningSteps:['10m'],leechThreshold:8,burySiblings:true})
+  mocks.updateSettings.mockReset().mockImplementation(async (_deck,value)=>value)
 })
 
 afterEach(() => {
@@ -164,6 +174,39 @@ afterEach(() => {
 })
 
 describe('application integration', () => {
+  it('loads and saves scheduling settings through query mutations', async () => {
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    const daily=await screen.findByRole('spinbutton',{name:'New cards per day'})
+    fireEvent.input(daily,{target:{value:'12'}})
+    fireEvent.click(screen.getByRole('button',{name:'Save'}))
+    await waitFor(()=>expect(mocks.updateSettings).toHaveBeenCalledWith('German',expect.objectContaining({newPerDay:12})))
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('imports a package and displays the validation report', async () => {
+    mocks.importPackage.mockResolvedValue({file:'deck.apkg',kind:'apkg',decks:1,notes:2,cards:4,reviews:7,media:3,compatibility:[],backup:'/tmp/backup.sqlite'})
+    vi.spyOn(window,'confirm').mockReturnValue(true)
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    const file=new File(['fixture'],'deck.apkg',{type:'application/octet-stream'})
+    fireEvent.change(await screen.findByLabelText('Anki package'),{target:{files:[file]}})
+    fireEvent.click(screen.getByRole('button',{name:'Import package'}))
+    expect(await screen.findByText('Import validated')).toBeTruthy()
+    expect(screen.getByText(/2 notes, 4 cards, 7 reviews/)).toBeTruthy()
+  })
+
+  it('shows backup restore failures without leaving settings', async () => {
+    mocks.backups.mockResolvedValue(['ankikani-before-import-test.sqlite'])
+    mocks.restoreBackup.mockRejectedValue(new Error('Backup is damaged'))
+    vi.spyOn(window,'confirm').mockReturnValue(true)
+    render(() => <App />)
+    fireEvent.click(await screen.findByRole('button',{name:'Scheduling'}))
+    fireEvent.click(await screen.findByRole('button',{name:'Restore'}))
+    expect((await screen.findByRole('alert')).textContent).toContain('Backup is damaged')
+    expect(window.location.pathname).toBe('/settings')
+  })
+
   it('restores and updates active deck selection through localStorage', async () => {
     localStorage.setItem('ankikani.activeDeck', 'German')
     render(() => <App />)
@@ -196,7 +239,7 @@ describe('application integration', () => {
     render(() => <App />)
     const selector = await screen.findByRole('combobox', { name: 'Active deck' })
     expect((selector as HTMLSelectElement).value).toBe('German')
-    await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German'))
+    await waitFor(() => expect(mocks.profile).toHaveBeenCalledWith('German',expect.any(AbortSignal)))
     await screen.findByRole('heading', { name: 'Lessons' })
     mocks.health.mockClear()
 
@@ -211,11 +254,11 @@ describe('application integration', () => {
 
     await waitFor(() => {
       expect(mocks.health).toHaveBeenCalledTimes(1)
-      expect(mocks.profile).toHaveBeenCalledWith('Default')
+      expect(mocks.profile).toHaveBeenCalledWith('Default',expect.any(AbortSignal))
       expect((selector as HTMLSelectElement).value).toBe('Default')
     })
     await screen.findByText('Nothing to study here yet')
-    expect(mocks.profile).toHaveBeenCalledWith('Default')
+    expect(mocks.profile).toHaveBeenCalledWith('Default',expect.any(AbortSignal))
   })
 
   it('leaves an active session when the Anki profile changes', async () => {
@@ -296,6 +339,8 @@ describe('application integration', () => {
       })
 
     render(() => <App />)
+    expect(await screen.findByRole('heading', { name: 'Import your Anki collection' })).toBeTruthy()
+    expect(screen.getByLabelText(/package/i, { selector: 'input' })).toBeTruthy()
     const retry = await screen.findByRole('button', { name: 'Retry connection' })
     fireEvent.click(retry)
 
@@ -339,7 +384,7 @@ describe('application integration', () => {
     expect(expectedAnswer.querySelector('.text-red-600')?.textContent).toBe('die')
     expect(screen.getByText(reviewCard.sourceExample)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
-    expect(mocks.cards).toHaveBeenCalledWith('German', [reviewCard.cardId], expect.anything())
+    expect(mocks.cards).toHaveBeenCalledWith('German', [reviewCard.cardId], expect.anything(), expect.any(AbortSignal))
     await waitFor(() => {
       expect(localStorage.getItem(storage)).toContain('"audioFilename":"ansage.mp3"')
       expect(localStorage.getItem(storage)).not.toContain('stale-profile-audio.mp3')
@@ -476,11 +521,9 @@ describe('application integration', () => {
     expect(screen.getByRole('button', { name: 'Replay audio' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-    expect(mocks.answer).toHaveBeenCalledWith(
-      reviewCard.cardId,
-      1,
-      expect.any(String),
-    )
+    await waitFor(() => expect(mocks.answer).toHaveBeenCalledWith(
+      reviewCard.cardId, 1, expect.any(String),
+    ))
     await screen.findByRole('heading', { name: nextCard.prompt })
   })
 
@@ -519,11 +562,9 @@ describe('application integration', () => {
       screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
     ).toContain('white')
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
-    expect(mocks.answer).toHaveBeenCalledWith(
-      reviewCard.cardId,
-      3,
-      expect.any(String),
-    )
+    await waitFor(() => expect(mocks.answer).toHaveBeenCalledWith(
+      reviewCard.cardId, 3, expect.any(String),
+    ))
     expect(screen.getByRole('heading', { name: reviewCard.prompt })).toBeTruthy()
     await waitFor(() => {
       expect(
@@ -569,9 +610,10 @@ describe('application integration', () => {
       screen.getByRole('textbox').closest('.card-shell')?.getAttribute('style'),
     ).toContain('var(--coral-soft)')
     expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
+    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2)
   })
 
-  it('replays only answer audio after correction details are shown', async () => {
+  it('autoplays answer audio on a mistake and allows replay from correction details', async () => {
     mocks.reviews.mockResolvedValue({
       deckName: 'German',
       cards: [{
@@ -588,10 +630,14 @@ describe('application integration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
     await screen.findByRole('button', { name: 'Continue' })
 
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    expect(play).toHaveBeenCalledOnce()
+    expect((play.mock.instances[0] as HTMLAudioElement).src).toContain('filename=ansage.mp3')
     fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
-    expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1)
+    expect(play).toHaveBeenCalledTimes(2)
+    expect((play.mock.instances[1] as HTMLAudioElement).src).toContain('filename=ansage.mp3')
     fireEvent.click(screen.getByRole('button', { name: 'Open dashboard' }))
-    expect(window.HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1)
+    expect(window.HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(2)
   })
 
   it('replays prompt audio from correction details when answer audio is absent', async () => {
@@ -614,6 +660,8 @@ describe('application integration', () => {
     await screen.findByRole('button', { name: 'Continue' })
 
     const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    expect(play).toHaveBeenCalledOnce()
+    expect((play.mock.instances[0] as HTMLAudioElement).src).toContain('filename=prompt.mp3')
     play.mockClear()
     fireEvent.keyDown(input, { key: 'j', ctrlKey: true })
     expect(play).toHaveBeenCalledOnce()

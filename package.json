@@ -7,19 +7,26 @@
     "dev": "bun --watch server/dev.ts",
     "build": "tsc -b && vite build",
     "start": "bun server/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "migrate": "bun server/migrate.ts",
+    "import": "bun server/package-import.ts",
+    "test": "bun --bun vitest run",
+    "test:watch": "bun --bun vitest",
     "check": "tsc -b"
   },
   "dependencies": {
+    "@tanstack/solid-query": "^5.101.4",
+    "ankipack": "^0.3.0",
     "lucide-solid": "^1.33.0",
-    "solid-js": "^1.9.15"
+    "solid-js": "^1.9.15",
+    "sql.js": "^1.14.2",
+    "ts-fsrs": "^5.4.1"
   },
   "devDependencies": {
     "@solidjs/testing-library": "^0.8.10",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.4.0",
     "@types/node": "^26.2.0",
+    "@types/sql.js": "^1.4.11",
     "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",

@@ -6,10 +6,11 @@ import Sparkles from 'lucide-solid/icons/sparkles'
 import { For, Show, batch, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { matchesAnswerPart, splitGermanArticle, type GermanGenderArticle } from '../lib/answers'
 import { api } from '../lib/api'
-import { loadCards } from '../lib/cards'
 import { sessionStorageKey } from '../lib/storage'
 import type { AnswerLanguage, AnswerPart, LessonItem, StudyCard, StudyConfig } from '../lib/domain'
 import { AudioButton, AudioShortcut, playAudioSequence, stopAudioPlayback } from './StudyAudio'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/solid-query'
+import { mutations, queries } from '../lib/query'
 
 type StudyPhase = 'answering' | 'correction' | 'retrying' | 'feedback'
 
@@ -86,47 +87,13 @@ function readStoredStudySession(storage: string): StoredStudySession | null {
   }
 }
 
-function createRecoverableLoad<T>(
-  source: () => string,
-  load: () => Promise<T>,
-) {
-  const [data, setData] = createSignal<T>()
-  const [loading, setLoading] = createSignal(true)
-  const [error, setError] = createSignal<unknown>()
-  let request = 0
-
-  const retry = async () => {
-    const current = ++request
-    setLoading(true)
-    setError(undefined)
-    try {
-      const next = await load()
-      if (current === request) setData(() => next)
-    } catch (caught) {
-      if (current === request) setError(caught)
-    } finally {
-      if (current === request) setLoading(false)
-    }
-  }
-
-  createEffect(() => {
-    source()
-    void retry()
-  })
-
-  return { data, loading, error, retry }
-}
-
 export function LessonSession(props: {
   deckName: string
   storageId: string
   configuration: StudyConfig
   onExit: () => void
 }) {
-  const payload = createRecoverableLoad(
-    () => `${props.deckName}:${JSON.stringify(props.configuration)}`,
-    () => api.lessons(props.deckName, props.configuration),
-  )
+  const payload = useQuery(() => queries.lessons(props.deckName,props.configuration))
   const teachingStorage = sessionStorageKey(
     props.storageId,
     'lesson-teaching',
@@ -168,13 +135,13 @@ export function LessonSession(props: {
   }
 
   createEffect(() => {
-    const lesson = payload.data()
-    if (!payload.loading() && lesson && lesson.items.length === 0) {
+    const lesson = payload.data
+    if (!payload.isPending && lesson && lesson.items.length === 0) {
       localStorage.removeItem(teachingStorage)
       localStorage.removeItem(sessionStorageKey(props.storageId, 'lesson'))
       props.onExit()
     } else if (
-      !payload.loading() &&
+      !payload.isPending &&
       lesson &&
       !quizzing() &&
       teachingIndex() >= lesson.items.length
@@ -185,8 +152,8 @@ export function LessonSession(props: {
 
   return (
     <Show
-      when={!payload.loading() && payload.data()}
-      fallback={<SessionLoading title="Preparing lessons" onExit={props.onExit} error={payload.error()} retry={() => void payload.retry()} />}
+      when={!payload.isPending && payload.data}
+      fallback={<SessionLoading title="Preparing lessons" onExit={props.onExit} error={payload.error} retry={() => void payload.refetch()} />}
     >
       {(lesson) => (
         <Show
@@ -233,14 +200,11 @@ export function ReviewSession(props: {
   configuration: StudyConfig
   onExit: () => void
 }) {
-  const payload = createRecoverableLoad(
-    () => `${props.deckName}:${JSON.stringify(props.configuration)}`,
-    () => api.reviews(props.deckName, props.configuration),
-  )
+  const payload = useQuery(() => queries.reviews(props.deckName,props.configuration))
   return (
     <Show
-      when={!payload.loading() && payload.data()}
-      fallback={<SessionLoading title="Building review queue" onExit={props.onExit} error={payload.error()} retry={() => void payload.retry()} />}
+      when={!payload.isPending && payload.data}
+      fallback={<SessionLoading title="Building review queue" onExit={props.onExit} error={payload.error} retry={() => void payload.refetch()} />}
     >
       {(session) => (
         <Show
@@ -385,6 +349,8 @@ function StudyRunner(props: {
   onExit: () => void
   onComplete?: () => void
 }) {
+  const queryClient = useQueryClient()
+  const grade = useMutation(() => mutations.answer(queryClient,props.deckName))
   const partsFor = (card: StudyCard): AnswerPart[] =>
     card.answerParts?.length
       ? card.answerParts
@@ -449,11 +415,7 @@ function StudyRunner(props: {
     setRestoreError('')
     try {
       const ids = restoredCards.map((card) => card.cardId)
-      const currentCards = await loadCards(
-        props.deckName,
-        ids,
-        props.configuration,
-      )
+      const currentCards = await queryClient.fetchQuery({...queries.cards(props.deckName,ids,props.configuration),staleTime:0})
       const byId = new Map(currentCards.map((card) => [card.cardId, card]))
       const refreshed = ids
         .map((cardId, cardIndex) => {
@@ -532,7 +494,7 @@ function StudyRunner(props: {
           globalThis.crypto?.randomUUID?.() ||
           `${Date.now()}-${Math.random()}`
         setGradeRequestId(requestId)
-        const response = await api.answer(card.cardId, ease, requestId)
+        const response = await grade.mutateAsync({cardId:card.cardId,ease,requestId})
         if (!response.saved) {
           if (response.stale) return 'stale' as const
           throw new Error('Anki rejected the card grade.')
@@ -574,6 +536,7 @@ function StudyRunner(props: {
       }
       else {
         setPhase('correction')
+        void playAudioSequence(answerAudioFiles(card), promptAudioFiles(card))
       }
       return
     }
@@ -672,6 +635,9 @@ function StudyRunner(props: {
                       : 'white',
               }}
             >
+              <Show when={card().leech}>
+                <p class="mb-4 text-center text-xs font-black uppercase tracking-[0.12em] text-[var(--coral-dark)]">Leech card</p>
+              </Show>
               <Show when={promptAudio().length}>
                 <div class="mb-5 flex justify-center">
                   <AudioButton

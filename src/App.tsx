@@ -4,11 +4,11 @@ import {
   Switch,
   batch,
   createEffect,
-  createResource,
   createSignal,
   onCleanup,
   onMount,
 } from 'solid-js'
+import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/solid-query'
 import { api } from './lib/api'
 import { configFromLegacy, reconcileConfig } from './lib/adapters'
 import {
@@ -26,13 +26,16 @@ import { ConnectionScreen, DeckLoading, EmptyDeck, Header } from './components/A
 import { Dashboard } from './components/Dashboard'
 import { DeckSetup } from './components/DeckSetup'
 import { LessonSession, ReviewSession } from './components/StudySessions'
+import { SchedulingSetup } from './components/SchedulingSetup'
+import { createAppQueryClient, queries } from './lib/query'
 
-type View = 'dashboard' | 'mapping' | 'lesson' | 'review'
+type View = 'dashboard' | 'mapping' | 'settings' | 'lesson' | 'review'
 
 const CONFIG_VERSION = 2
 const VIEW_PATHS: Record<View, string> = {
   dashboard: '/',
   mapping: '/fields',
+  settings: '/settings',
   lesson: '/lessons',
   review: '/reviews',
 }
@@ -41,6 +44,7 @@ function viewFromPath(pathname: string): View {
   if (pathname === '/reviews') return 'review'
   if (pathname === '/lessons') return 'lesson'
   if (pathname === '/fields') return 'mapping'
+  if (pathname === '/settings') return 'settings'
   return 'dashboard'
 }
 
@@ -57,7 +61,8 @@ function loadConfig(deck: string, storageId: string): DeckConfig | null {
   }
 }
 
-function App() {
+function AppContent() {
+  const queryClient = useQueryClient()
   const [connected, setConnected] = createSignal<boolean | null>(null)
   const [connectionError, setConnectionError] = createSignal('')
   const [decks, setDecks] = createSignal<DeckSummary[]>([])
@@ -70,15 +75,10 @@ function App() {
   let connectRequest = 0
   let configureRequest = 0
   let profileSyncRequest = 0
-  const [dashboard, { refetch: refetchDashboard }] = createResource(
-    () => {
-      if (view() !== 'dashboard') return null
-      const deck = deckName()
-      const config = configuration()
-      return deck && config?.deckName === deck ? { deck, config } : null
-    },
-    ({ deck, config }) => api.dashboard(deck, config),
-  )
+  const dashboard = useQuery(() => {
+    const deck = deckName(); const config = configuration()
+    return queries.dashboard(deck,config,view()==='dashboard' && config?.deckName===deck)
+  })
 
   async function connect(
     silent = false,
@@ -88,14 +88,16 @@ function App() {
     if (!silent) setConnected(null)
     setConnectionError('')
     try {
-      const health = knownHealth ?? await api.health()
-      const availableDecks = await api.decks()
+      const health = knownHealth ?? await queryClient.fetchQuery(queries.health())
+      const availableDecks = await queryClient.fetchQuery(queries.decks())
+      if (!health) throw new Error('Health check returned no data.')
       if (request !== connectRequest) return
       const activeProfile = health.profileName || 'Default'
       const sameProfile = profileName() === activeProfile
       const changedLoadedProfile = Boolean(profileName()) && !sameProfile
       if (!sameProfile) {
         configureRequest += 1
+        queryClient.removeQueries({predicate:(query)=>query.queryKey[0]!=='health'})
       }
       let selected = sameProfile
         ? deckName()
@@ -138,7 +140,7 @@ function App() {
     setConfiguration(null)
     setStorageId('')
     try {
-      const nextProfile = await api.profile(selectedDeck)
+      const nextProfile = await queryClient.fetchQuery(queries.profile(selectedDeck))
       if (request !== configureRequest || profileName() !== activeProfile) return
       const nextStorageId = deckStorageId(activeProfile, nextProfile)
       setProfile(nextProfile)
@@ -203,7 +205,7 @@ function App() {
       if (connected() !== true) return
       const request = ++profileSyncRequest
       try {
-        const health = await api.health()
+        const health = await queryClient.fetchQuery(queries.health())
         if (request !== profileSyncRequest) return
         const activeProfile = health.profileName || 'Default'
         if (activeProfile !== profileName()) {
@@ -260,6 +262,9 @@ function App() {
                     onCancel={configuration() ? () => navigate('dashboard') : undefined}
                   />
                 </Match>
+                <Match when={view() === 'settings'}>
+                  <SchedulingSetup deckName={deckName()} onClose={() => navigate('dashboard')} onSaved={() => { navigate('dashboard'); void dashboard.refetch() }} />
+                </Match>
                 <Match when={view() === 'lesson' && configuration() && storageId()}>
                   <LessonSession
                     deckName={deckName()}
@@ -282,15 +287,16 @@ function App() {
                 </Match>
                 <Match when={configuration()}>
                   <Dashboard
-                    data={dashboard()}
-                    loading={dashboard.loading}
+                    data={dashboard.data}
+                    loading={dashboard.isPending}
                     error={dashboard.error}
                     deckName={deckName()}
                     configuration={configuration()!}
                     onLessons={() => navigate('lesson')}
                     onReviews={() => navigate('review')}
                     onConfigure={() => navigate('mapping')}
-                    onRetry={() => void refetchDashboard()}
+                    onScheduling={() => navigate('settings')}
+                    onRetry={() => void dashboard.refetch()}
                   />
                 </Match>
                 <Match when={!configuration() && profile()}>
@@ -309,4 +315,7 @@ function App() {
   )
 }
 
-export default App
+export default function App() {
+  const client = createAppQueryClient()
+  return <QueryClientProvider client={client}><AppContent /></QueryClientProvider>
+}

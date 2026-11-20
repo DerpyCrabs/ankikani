@@ -4,6 +4,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
 import { For, Show } from 'solid-js'
 import type { DeckSummary } from '../lib/domain'
+import { CollectionImport } from './CollectionImport'
 
 export function Header(props: {
   decks: DeckSummary[]
@@ -67,20 +68,16 @@ export function ConnectionScreen(props: {
           </Show>
         </div>
         <h1 class="text-3xl font-black tracking-[-0.04em]">
-          {props.connected === null ? 'Finding Anki…' : 'Anki is out of reach'}
+          {props.connected === null ? 'Opening your collection…' : 'No local collection yet'}
         </h1>
         <p class="mt-3 leading-7 text-[var(--muted)]">
           {props.connected === null
-            ? 'Checking the local AnkiConnect bridge.'
+            ? 'Checking for a local collection.'
             : props.error ||
-              'Start Anki Desktop and make sure AnkiConnect is enabled.'}
+              'Import an Anki package to start studying.'}
         </p>
         <Show when={props.connected === false}>
-          <ol class="mt-6 space-y-2 border-l-2 border-[var(--yellow)] pl-5 text-sm font-semibold">
-            <li>1. Open Anki Desktop on this computer.</li>
-            <li>2. Keep AnkiConnect enabled.</li>
-            <li>3. Retry this connection.</li>
-          </ol>
+          <CollectionImport compact />
           <button class="button-soft-primary mt-7 w-full" onClick={() => void props.retry()}>
             <RefreshCw class="size-4" />
             Retry connection
@@ -99,8 +96,7 @@ export function EmptyDeck(props: { deckName: string }) {
       </div>
       <h1 class="mt-6 text-3xl font-black">Nothing to study here yet</h1>
       <p class="mt-3 text-[var(--muted)]">
-        <strong>{props.deckName}</strong> has no notes. Add or import cards in
-        Anki Desktop, then return here.
+        <strong>{props.deckName}</strong> has no notes. Import another package from Scheduling or choose another deck.
       </p>
     </section>
   )

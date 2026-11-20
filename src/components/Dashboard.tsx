@@ -7,9 +7,10 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import Settings2 from 'lucide-solid/icons/settings-2'
 import Sparkles from 'lucide-solid/icons/sparkles'
 import X from 'lucide-solid/icons/x'
-import { For, Show, createResource, createSignal, onCleanup, onMount } from 'solid-js'
-import { loadCards } from '../lib/cards'
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
+import { useQuery } from '@tanstack/solid-query'
 import type { DashboardData, ForecastDay, StudyConfig } from '../lib/domain'
+import { queries } from '../lib/query'
 
 export function Dashboard(props: {
   data: DashboardData | undefined
@@ -20,6 +21,7 @@ export function Dashboard(props: {
   onLessons: () => void
   onReviews: () => void
   onConfigure: () => void
+  onScheduling: () => void
   onRetry: () => void
 }) {
   const [selectedDay, setSelectedDay] = createSignal<ForecastDay | null>(null)
@@ -37,10 +39,10 @@ export function Dashboard(props: {
                 {props.deckName}
               </h1>
             </div>
-            <button class="button-quiet" onClick={props.onConfigure}>
-              <Settings2 class="size-4" />
-              Fields
-            </button>
+            <div class="flex gap-2">
+              <button class="button-quiet" onClick={props.onScheduling}><Settings2 class="size-4" />Scheduling</button>
+              <button class="button-quiet" onClick={props.onConfigure}><Settings2 class="size-4" />Fields</button>
+            </div>
           </div>
 
           <section class="grid gap-5 lg:grid-cols-12">
@@ -358,10 +360,7 @@ function DueCardsDialog(props: {
   configuration: StudyConfig
   onClose: () => void
 }) {
-  const [cards, { refetch }] = createResource(
-    () => props.day.cardIds,
-    (ids) => loadCards(props.deckName, ids, props.configuration),
-  )
+  const cards = useQuery(() => queries.cards(props.deckName,props.day.cardIds,props.configuration))
 
   onMount(() => {
     const close = (event: KeyboardEvent) => {
@@ -398,7 +397,7 @@ function DueCardsDialog(props: {
         </header>
         <div class="max-h-[65vh] overflow-y-auto p-4 sm:p-6">
           <Show
-            when={!cards.loading}
+            when={!cards.isPending}
             fallback={<LoaderCircle class="mx-auto my-12 size-7 animate-spin" />}
           >
             <Show
@@ -412,7 +411,7 @@ function DueCardsDialog(props: {
                   </p>
                   <button
                     class="button-quiet mt-4"
-                    onClick={() => void refetch()}
+                    onClick={() => void cards.refetch()}
                   >
                     Retry
                   </button>
@@ -420,7 +419,7 @@ function DueCardsDialog(props: {
               }
             >
               <div class="space-y-2">
-                <For each={cards()}>
+                <For each={cards.data}>
                   {(card) => (
                     <div class="flex items-center justify-between gap-4 rounded-xl bg-[var(--paper)] px-4 py-3">
                       <div class="min-w-0">

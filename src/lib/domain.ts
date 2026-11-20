@@ -3,6 +3,18 @@ export type AnswerLanguage = 'german' | 'english' | 'plain'
 export type AnswerMode = 'parts' | 'alternatives' | 'unordered'
 export type StudyContentKind = 'text' | 'cloze' | 'audio' | 'image' | 'multi'
 
+export interface SchedulingSettings {
+  newPerDay: number
+  reviewsPerDay: number
+  desiredRetention: number
+  maximumInterval: number
+  learningSteps: `${number}${'m' | 'h' | 'd'}`[]
+  relearningSteps: `${number}${'m' | 'h' | 'd'}`[]
+  leechThreshold: number
+  burySiblings: boolean
+  fsrsWeights?: number[]
+}
+
 export interface FieldMapping {
   modelName: string
   sourceWord: string
@@ -167,6 +179,7 @@ export interface StudyCard {
   due: number
   reps: number
   lapses: number
+  leech?: boolean
 }
 
 export interface LessonItem {
@@ -214,7 +227,7 @@ export interface DashboardData {
   completedYesterday: number
   currentStreak: number
   bestStreak: number
-  next24Hours: number
+  dueToday: number
   forecast: ForecastDay[]
   activeSpread: ActiveStage[]
   spreadLegend: SpreadLegendItem[]

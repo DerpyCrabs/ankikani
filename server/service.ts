@@ -325,7 +325,7 @@ export async function getDashboard(
     completedYesterday: reviewedOn(reviewLog, yesterday),
     currentStreak: streak.current,
     bestStreak: streak.best,
-    next24Hours: visibleWeek[0]?.count ?? 0,
+    dueToday: visibleWeek[0]?.count ?? 0,
     forecast: visibleWeek,
     activeSpread: spread.stages,
     spreadLegend: spread.legend,
