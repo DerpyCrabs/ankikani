@@ -154,7 +154,7 @@ export const LessonSession = component(
             >
               <SessionEmpty
                 title="No lessons available"
-                copy="Anki's new-card limit has no complete word pairs available right now."
+                copy="No more lesson items fit within the current new-card limit."
                 onExit={props.onExit}
               />
             </section>
@@ -232,6 +232,8 @@ const LessonTeaching = view<{
     props.onNext()
   }
   const card = () => props.item.cards[0]
+  const promptExample = () => card()?.direction === 'reverse' ? props.item.targetExample : props.item.sourceExample
+  const answerExample = () => card()?.direction === 'reverse' ? props.item.sourceExample : props.item.targetExample
   const audioFiles = () =>
     props.item.promptAudioFilenames?.length
       ? props.item.promptAudioFilenames
@@ -257,25 +259,27 @@ const LessonTeaching = view<{
       <article use={domBinding(nextLesson, teachKeys)} class="mx-auto w-full max-w-3xl">
         <div class="mb-8 flex flex-wrap items-center justify-between gap-3">
           <span class="rounded-full bg-[var(--yellow)] px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
-            New word {props.index + 1} of {props.total}
+            New card {props.index + 1} of {props.total}
           </span>
           <div class="flex flex-wrap items-center justify-end gap-3">
             <AudioButton filenames={audioFiles()} autoplay={props.item.contentKind === 'audio'} />
             <button class="button-soft-primary" onClick={nextLesson}>
-              {props.index + 1 === props.total ? 'Start quiz' : 'Next word'}
+              {props.index + 1 === props.total ? 'Start quiz' : 'Next card'}
               <ChevronRight class="size-4" />
             </button>
           </div>
         </div>
         <div data-step={props.index % 2} class="lesson-pair grid gap-4 md:grid-cols-2">
-          <div class="card-shell bg-[var(--mint-soft)] p-6 sm:p-8">
+          <div class={props.item.imageFilenames?.length && !card()?.prompt && !props.item.sourceExample
+            ? 'card-shell flex flex-col justify-center bg-[var(--mint-soft)] p-6 sm:p-8'
+            : 'card-shell bg-[var(--mint-soft)] p-6 sm:p-8'}>
             {card()?.promptLabel ? <p class="eyebrow mb-2">{card()?.promptLabel}</p> : null}
             {card()?.wakaGlyph ? <span class="waka-glyph">{card()?.wakaGlyph}</span> : null}
             {card()?.chessDiagram ? <ChessDiagram diagram={card()!.chessDiagram!} /> : null}
             {props.item.imageFilenames?.length ? (
-              <div class="mb-4 flex flex-wrap gap-3">
+              <div class="flex flex-wrap justify-center gap-3 [&:has(+h1:not(:empty))]:mb-4">
                 {list(props.item.imageFilenames ?? [], (filename) => (
-                  <img class="max-h-48 rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />
+                  <img class="max-h-48 w-full rounded-xl object-contain" src={api.mediaUrl(filename)} alt="Prompt illustration" />
                 ))}
               </div>
             ) : null}
@@ -285,9 +289,9 @@ const LessonTeaching = view<{
                 language={card()?.promptLanguage}
               />
             </h1>
-            {props.item.sourceExample ? (
+            {promptExample() ? (
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">
-                {props.item.sourceExample}
+                {promptExample()}
               </p>
             ) : null}
           </div>
@@ -301,9 +305,9 @@ const LessonTeaching = view<{
                 language={card()?.answerLanguage}
               />
             </h2>
-            {props.item.targetExample ? (
+            {answerExample() ? (
               <p class="mt-6 border-t border-black/10 pt-5 text-lg italic leading-8">
-                {props.item.targetExample}
+                {answerExample()}
               </p>
             ) : null}
             {props.item.note ? <NoteContent value={props.item.note} /> : null}
@@ -597,7 +601,7 @@ const StudyRunner = component(
                   <div class="mb-5 flex flex-wrap justify-center gap-3">
                     {list(card.promptImageFilenames ?? [], (filename) => (
                       <img
-                        class="max-h-64 max-w-full rounded-xl object-contain"
+                        class="max-h-64 w-full rounded-xl object-contain"
                         src={api.mediaUrl(filename)}
                         alt=""
                       />
@@ -758,7 +762,7 @@ const Feedback = view<{
       {props.card.answerImageFilenames?.length ? (
         <div class="mt-4 flex flex-wrap gap-3">
           {list(props.card.answerImageFilenames ?? [], (filename) => (
-            <img class="max-h-48 max-w-full rounded-xl object-contain" src={api.mediaUrl(filename)} alt="" />
+            <img class="max-h-48 max-w-full rounded-xl object-contain" src={api.mediaUrl(filename)} alt="Answer illustration" />
           ))}
         </div>
       ) : null}

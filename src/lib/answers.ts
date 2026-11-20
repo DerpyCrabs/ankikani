@@ -99,8 +99,8 @@ export function audioFilenames(value: string): string[] {
 }
 
 export function imageFilenames(value: string): string[] {
-  return [...value.matchAll(/<img[^>]+src=["']([^"']+)["'][^>]*>/giu)]
-    .map((match) => match[1])
+  return [...value.matchAll(/<img[^>]+\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>/giu)]
+    .map((match) => match[1] ?? match[2])
     .filter(
       (filename) =>
         filename &&

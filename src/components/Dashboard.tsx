@@ -58,7 +58,7 @@ export const Dashboard = component(
               kind="lesson"
               count={data.lessonsAvailable}
               title="Lessons"
-              hint={data.nextLessonSize ? `${data.nextLessonSize} ${data.nextLessonSize === 1 ? 'word' : 'words'} in your next lesson` : undefined}
+              hint={data.nextLessonSize ? `${data.nextLessonSize} ${data.nextLessonSize === 1 ? 'item' : 'items'} in your next lesson` : undefined}
               action="Start lessons"
               disabled={(data.nextLessonSize ?? data.lessonsAvailable) === 0}
               onClick={props.onLessons}

@@ -3,6 +3,7 @@ import {
   checkAnswer,
   answerVariants,
   audioFilenames,
+  imageFilenames,
   englishAnswerVariants,
   foldAnswer,
   germanAnswerVariants,
@@ -11,6 +12,10 @@ import {
   splitGermanArticle,
   submissionDecision,
 } from '../src/lib/answers'
+
+it('keeps apostrophes in quoted image filenames', () => {
+  expect(imageFilenames(`<img src="1 be out of one's mind.jpg">`)).toEqual(["1 be out of one's mind.jpg"])
+})
 
 it('preserves long dictionary definitions with many parenthetical clauses', () => {
   const definition = Array.from({ length: 32 }, (_, i) => `sense (example ${i})`).join(' ')

@@ -495,7 +495,8 @@ function templatePlans(input: DetectionInput): CardPlan[] {
       promptCandidates.find((name) => hasText(input, name)) ??
       promptCandidates[0]
     const backOnly = backFields.filter((name) => !frontFields.includes(name))
-    const meaningfulBack = backOnly.filter(
+    const markedAnswer = template.Back.match(/<[^>]+\bid=["']answer["'][^>]*>\s*\{\{([^{}]+)\}\}/iu)?.[1]?.trim()
+    const meaningfulBack = markedAnswer && backOnly.includes(markedAnswer) ? [markedAnswer] : backOnly.filter(
       (name) =>
         !AUDIO_FIELD.test(name) &&
         !IMAGE_FIELD.test(name) &&
