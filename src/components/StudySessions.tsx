@@ -344,6 +344,13 @@ const ExerciseContext = view<{ card?: StudyCard }>(({ card }) => (
   </div>
 ))
 
+function selectableChoices(card: StudyCard) {
+  const groups = card.exerciseChoices
+  const parts = partsFor(card)
+  if (groups?.length !== 1 || groups[0].length < 2 || parts.length !== 1) return []
+  return groups[0].some(choice => matchesAnswerPart(choice, parts[0])) ? groups[0] : []
+}
+
 const ChessDiagram = view<{ diagram: NonNullable<StudyCard['chessDiagram']> }>(({ diagram }) => (
   <div class="mx-auto mb-5 grid aspect-square w-full max-w-72 grid-cols-8 overflow-hidden rounded-xl border border-black/15"
     role="img" aria-label={`Chess position: ${diagram.ranks.map(rank => rank.replace(/ +/gu, spaces => String(spaces.length))).join('/')}`}>
@@ -481,10 +488,13 @@ const StudyRunner = component(
         patch({ phase: 'revealed' })
         return
       }
-      const rating = (event.submitter as HTMLButtonElement | null)?.value
+      const button = event.submitter as HTMLButtonElement | null
+      const inputs = button?.name === 'choice' ? [button.value] : state.inputs
+      if (button?.name === 'choice') patch({ inputs })
+      const rating = button?.value
       if (card.selfGrade && rating !== 'again' && rating !== 'good') return
       const correcting = card.selfGrade ? rating === 'again' : state.phase === 'correction'
-      if (!card.selfGrade && !correcting && !partsFor(card).every((part, i) => matchesAnswerPart(state.inputs[i] ?? '', part))) {
+      if (!card.selfGrade && !correcting && !partsFor(card).every((part, i) => matchesAnswerPart(inputs[i] ?? '', part))) {
         patch({ phase: 'correction' })
         owner.run('answer-audio', playAudioSequence(answerAudioFiles(card), promptAudioFiles(card)), 'replace')
         return
@@ -541,6 +551,7 @@ const StudyRunner = component(
               onExit={props.onComplete ?? props.onExit}
             />
           )
+        const choices = selectableChoices(card)
         const progress = index + 1
         const promptAudio = promptAudioFiles(card)
         const answerAudio = answerAudioFiles(card)
@@ -606,7 +617,8 @@ const StudyRunner = component(
                     />
                   </div>
                 ) : null}
-                {card.exerciseInstruction || card.exerciseChoices?.length ? <ExerciseContext card={card} /> : null}
+                {choices.length ? <p class="mb-4 text-center text-sm font-semibold">{card.exerciseInstruction}</p>
+                  : card.exerciseInstruction || card.exerciseChoices?.length ? <ExerciseContext card={card} /> : null}
                 {card.promptLabel ? <p class="eyebrow mb-2 text-center">{card.promptLabel}</p> : null}
                 {card.wakaGlyph ? <span class="waka-glyph">{card.wakaGlyph}</span> : null}
                 {card.chessDiagram ? <ChessDiagram diagram={card.chessDiagram} /> : null}
@@ -623,14 +635,23 @@ const StudyRunner = component(
                 ) : null}
                 {card.prompt ? (
                   <h1 class="mx-auto text-center text-3xl font-black tracking-[-0.045em] sm:text-4xl">
-                    <GermanArticleText value={card.prompt} language={card.promptLanguage} />
+                    <GermanArticleText value={choices.length ? card.prompt.replace(/([.!?])\s*…$/u, '$1') : card.prompt} language={card.promptLanguage} />
                   </h1>
                 ) : null}
 
                 <form class="mt-7" onSubmit={submit}>
+                  {choices.length ? <div class="grid gap-2 sm:grid-cols-2">
+                    {list(choices, choice => (
+                      <button type="submit" name="choice" value={choice} disabled={saving || revealed}
+                        class="button-quiet h-auto whitespace-normal"
+                        style={{ 'border-color': revealed && matchesAnswerPart(choice, partsFor(card)[0]) ? 'var(--mint)' : revealed && choice === inputs[0] ? 'var(--coral)' : undefined }}>
+                        {choice}
+                      </button>
+                    ))}
+                  </div> : null}
                   <div class="mx-auto max-w-sm space-y-3">
                     {list(
-                      card.selfGrade ? [] : partsFor(card),
+                      card.selfGrade || choices.length ? [] : partsFor(card),
                       (item) => item.id,
                       (part, partIndex) => (
                         <label class="block">
@@ -698,7 +719,7 @@ const StudyRunner = component(
                     {phase === 'revealed' ? <div class="grid grid-cols-2 gap-3">
                       <button class="button-quiet" value="again" disabled={saving || Boolean(gradeRequestId && result === 'correct')}>Again</button>
                       <button class="button-soft-primary" value="good" disabled={saving || Boolean(gradeRequestId && result === 'incorrect')}>Good</button>
-                    </div> : <button class="button-soft-primary w-full" disabled={saving}>
+                    </div> : choices.length && !revealed ? null : <button class="button-soft-primary w-full" disabled={saving}>
                       {saving ? (
                         <>
                           <LoaderCircle class="size-4 animate-spin" />

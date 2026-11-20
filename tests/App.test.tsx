@@ -513,6 +513,23 @@ describe('application integration', () => {
     expect(expectedAnswer.querySelector('.text-red-600')).toBeNull()
   })
 
+  it.each([true, false])('grades a grammar choice directly (correct: %s)', async correct => {
+    const answer = "You mustn't forget it."
+    const wrong = "You mustn't be late."
+    const card = { ...reviewCard, prompt: 'You must remember your password. …',
+      canonicalAnswer: answer, acceptedAnswers: [answer], answerLanguage: 'english',
+      exerciseInstruction: 'Find the sentence with a similar meaning.', exerciseChoices: [[answer, wrong]] }
+    mocks.reviews.mockResolvedValue({ deckName: 'German', cards: [card] })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    const choice = await screen.findByRole('button', { name: correct ? answer : wrong })
+    expect(screen.queryByRole('textbox')).toBeNull()
+    fireEvent.click(choice)
+    const next = await screen.findByRole('button', { name: 'Continue' })
+    if (!correct) fireEvent.click(next)
+    await waitFor(() => expect(mocks.answer).toHaveBeenCalledWith(card.cardId, correct ? 3 : 1, expect.any(String)))
+  })
+
   it('continues with Again without a separate correction check', async () => {
     const nextCard: StudyCard = {
       ...reviewCard,
