@@ -273,6 +273,7 @@ const LessonTeaching = view<{
           <div class={props.item.imageFilenames?.length && !card()?.prompt && !props.item.sourceExample
             ? 'card-shell flex flex-col justify-center bg-[var(--mint-soft)] p-6 sm:p-8'
             : 'card-shell bg-[var(--mint-soft)] p-6 sm:p-8'}>
+            {card()?.exerciseInstruction || card()?.exerciseChoices?.length ? <ExerciseContext card={card()} /> : null}
             {card()?.promptLabel ? <p class="eyebrow mb-2">{card()?.promptLabel}</p> : null}
             {card()?.wakaGlyph ? <span class="waka-glyph">{card()?.wakaGlyph}</span> : null}
             {card()?.chessDiagram ? <ChessDiagram diagram={card()!.chessDiagram!} /> : null}
@@ -332,6 +333,17 @@ type RunnerProps = SessionProps & { mode: 'lesson' | 'review'; cards: StudyCard[
 const chessPieces: Record<string, string> = {
   K:'♔', Q:'♕', R:'♖', B:'♗', N:'♘', P:'♙', k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟',
 }
+const ExerciseContext = view<{ card?: StudyCard }>(({ card }) => (
+  <div class="mb-4 space-y-3">
+    <p class="font-semibold">{card?.exerciseInstruction}</p>
+    {list(card?.exerciseChoices ?? [], (_group, index) => index, group => (
+      <ul class="flex flex-wrap gap-2">
+        {list(group, choice => <li class="rounded-lg border border-black/15 px-2 py-1 text-sm">{choice}</li>)}
+      </ul>
+    ))}
+  </div>
+))
+
 const ChessDiagram = view<{ diagram: NonNullable<StudyCard['chessDiagram']> }>(({ diagram }) => (
   <div class="mx-auto mb-5 grid aspect-square w-full max-w-72 grid-cols-8 overflow-hidden rounded-xl border border-black/15"
     role="img" aria-label={`Chess position: ${diagram.ranks.map(rank => rank.replace(/ +/gu, spaces => String(spaces.length))).join('/')}`}>
@@ -594,6 +606,7 @@ const StudyRunner = component(
                     />
                   </div>
                 ) : null}
+                {card.exerciseInstruction || card.exerciseChoices?.length ? <ExerciseContext card={card} /> : null}
                 {card.promptLabel ? <p class="eyebrow mb-2 text-center">{card.promptLabel}</p> : null}
                 {card.wakaGlyph ? <span class="waka-glyph">{card.wakaGlyph}</span> : null}
                 {card.chessDiagram ? <ChessDiagram diagram={card.chessDiagram} /> : null}

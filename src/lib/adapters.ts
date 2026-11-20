@@ -834,16 +834,21 @@ function details(card: AnkiCardInfo, plan: CardPlan): StudyDetail[] {
     .filter((item) => item.value)
 }
 
+function isGrammarExercise(card: AnkiCardInfo, plan: CardPlan) {
+  return plan.clozeField === 'Question' && Boolean(card.fields.Rubric && card.fields.Choices)
+}
+
 function answerParts(card: AnkiCardInfo, plan: CardPlan): AnswerPart[] {
   if (plan.kind === 'cloze' && plan.clozeField) {
     const content = clozeContent(field(card, plan.clozeField), card.ord)
     return content.answers.map((answer, index) => {
       const language = plan.answerLanguages[index] ?? plan.answerLanguages[0] ?? 'plain'
+      const forms = isGrammarExercise(card, plan) ? answer.split('|').map(form => form.trim()).filter(Boolean) : [answer]
       return {
         id: `cloze-${index}`,
         label: 'Missing text',
-        canonicalAnswer: answer,
-        acceptedAnswers: variants(answer, language, plan.answerSeparators),
+        canonicalAnswer: forms[0] ?? answer,
+        acceptedAnswers: forms.flatMap(form => variants(form, language, plan.answerSeparators)),
         language,
         required: true,
         mode: 'single',
@@ -988,6 +993,10 @@ export function adaptCard(
     directionLabel: selectedPlan.directionLabel,
     chessDiagram,
     wakaGlyph,
+    exerciseInstruction: isGrammarExercise(card, selectedPlan) ? plain(field(card, 'Rubric')) : undefined,
+    exerciseChoices: isGrammarExercise(card, selectedPlan)
+      ? field(card, 'Choices').split(' | ').map(group => group.split(' / ').map(plain).filter(Boolean)).filter(group => group.length)
+      : undefined,
     promptLabel: selectedPlan.wakaPrompt,
     selfGrade,
     prompt: chessDiagram ? (chessDiagram.turn ? `${chessDiagram.turn} to move` : 'Find the move') : cloze?.prompt ?? promptText,

@@ -153,6 +153,8 @@ export interface StudyDetail {
 
 export interface StudyCard {
   wakaGlyph?: string
+  exerciseChoices?: string[][]
+  exerciseInstruction?: string
   promptLabel?: string
   selfGrade?: boolean
   chessDiagram?: { ranks: string[]; turn: string }

@@ -169,10 +169,16 @@ export function listOwnedDecks(): DeckSummary[] {
     const config = names.length ? getOwnedDeckProfile(deck.name).suggestedConfig : null
     let supported = false
     if (config?.models.some(model => model.enabled)) {
-      const rows = db().query<CardRow, [string,string]>(`SELECT c.*, n.model_name, n.fields_json
-        FROM cards c JOIN notes n ON n.id=c.note_id WHERE c.deck_name=? OR c.deck_name LIKE ?`)
-      for (const row of rows.iterate(deck.name, `${deck.name}::%`)) {
-        if (adaptCard(ankiCard(row),config)) { supported = true; break }
+      const batchSize = 64
+      const query = db().query<CardRow, [string,string,number]>(`SELECT c.*, n.model_name, n.fields_json
+        FROM cards c JOIN notes n ON n.id=c.note_id WHERE (c.deck_name=? OR c.deck_name LIKE ?) AND c.id>?
+        ORDER BY c.id LIMIT ${batchSize}`)
+      let afterId = Number.MIN_SAFE_INTEGER
+      while (!supported) {
+        const batch = query.all(deck.name, `${deck.name}::%`, afterId)
+        supported = batch.some(row => adaptCard(ankiCard(row),config))
+        if (batch.length < batchSize) break
+        afterId = batch[batch.length - 1].id
       }
     }
     return { id: deck.id, name: deck.name, supported, modelNames: names.map((item) => item.name) }
