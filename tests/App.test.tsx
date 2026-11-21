@@ -647,6 +647,23 @@ describe('application integration', () => {
     expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2)
   })
 
+  it('autoplays each vocabulary recording when entering and advancing a lesson', async () => {
+    const tracks = ['ansage.mp3', 'anschluss.mp3']
+    mocks.lessons.mockResolvedValue({
+      deckName: 'German', quizCards: [reviewCard],
+      items: tracks.map((audioFilename, index) => ({
+        ...reviewCard, noteId: index + 1, audioFilename, contentKind: 'text', cards: [reviewCard],
+      })),
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start lessons' }))
+    const play = vi.mocked(window.HTMLMediaElement.prototype.play)
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Next card' }))
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(2))
+    expect(play.mock.instances.map(audio => new URL((audio as HTMLAudioElement).src).searchParams.get('filename'))).toEqual(tracks)
+  })
+
   it('autoplays answer audio on a mistake and allows replay from correction details', async () => {
     mocks.reviews.mockResolvedValue({
       deckName: 'German',

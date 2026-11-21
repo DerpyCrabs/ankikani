@@ -262,7 +262,7 @@ const LessonTeaching = view<{
             New card {props.index + 1} of {props.total}
           </span>
           <div class="flex flex-wrap items-center justify-end gap-3">
-            <AudioButton filenames={audioFiles()} autoplay={props.item.contentKind === 'audio'} />
+            <AudioButton filenames={audioFiles()} autoplay playbackKey={props.index} />
             <button class="button-soft-primary" onClick={nextLesson}>
               {props.index + 1 === props.total ? 'Start quiz' : 'Next card'}
               <ChevronRight class="size-4" />

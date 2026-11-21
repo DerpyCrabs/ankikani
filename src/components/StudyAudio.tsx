@@ -5,7 +5,7 @@ import Volume2 from '@effectweb/lucide/icons/volume-2'
 import { playAudioSequence } from './playback'
 
 type AudioProps = { filenames: string[]; fallbackFilenames?: string[] }
-type ButtonProps = AudioProps & { label?: string; autoplay?: boolean }
+type ButtonProps = AudioProps & { label?: string; autoplay?: boolean; playbackKey?: number }
 
 const trackKey = (props: AudioProps) => JSON.stringify([props.filenames, props.fallbackFilenames])
 const playback = (props: AudioProps) =>
@@ -43,7 +43,7 @@ export const AudioShortcut = component(
 export const AudioButton = component(
   {
     init: (tracks: ButtonProps) => ({ tracks, playing: false, failed: false }),
-    identity: (props) => JSON.stringify([trackKey(props), props.autoplay]),
+    identity: (props) => JSON.stringify([trackKey(props), props.autoplay, props.playbackKey]),
   },
   (owner) => {
     function play() {
