@@ -187,6 +187,10 @@ button:disabled {
   outline-offset: 3px;
 }
 
+.button-soft-primary[data-auto-focused]:focus-visible {
+  outline: none;
+}
+
 .field-label {
   margin-bottom: 0.5rem;
   display: flex;

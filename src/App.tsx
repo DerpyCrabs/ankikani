@@ -155,13 +155,32 @@ export default component({ init: initialState }, (owner) => {
     )
   }
   const onPop = () => owner.patch({ screen: viewFromPath(window.location.pathname) })
-  const onVisible = () => {
-    if (document.visibilityState === 'visible') syncProfile()
+  const refreshVisibleDashboard = () => {
+    const { screen, connected, deckName, configuration } = owner.read()
+    if (document.visibilityState === 'visible' && screen === 'dashboard' && connected && configuration) {
+      cache.invalidateQuery(dashboardData, { deck: deckName, config: configuration })
+    }
   }
+  let dashboardTimer: number | undefined
+  const scheduleDashboardRefresh = () => {
+    window.clearInterval(dashboardTimer)
+    if (document.visibilityState === 'visible') {
+      dashboardTimer = window.setInterval(refreshVisibleDashboard, 60_000)
+    }
+  }
+  const onVisible = () => {
+    scheduleDashboardRefresh()
+    if (document.visibilityState === 'visible') {
+      syncProfile()
+      refreshVisibleDashboard()
+    }
+  }
+  scheduleDashboardRefresh()
   window.addEventListener('popstate', onPop)
   window.addEventListener('focus', syncProfile)
   document.addEventListener('visibilitychange', onVisible)
   owner.own(() => {
+    window.clearInterval(dashboardTimer)
     window.removeEventListener('popstate', onPop)
     window.removeEventListener('focus', syncProfile)
     document.removeEventListener('visibilitychange', onVisible)

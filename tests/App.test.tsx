@@ -530,6 +530,23 @@ describe('application integration', () => {
     await waitFor(() => expect(mocks.answer).toHaveBeenCalledWith(card.cardId, correct ? 3 : 1, expect.any(String)))
   })
 
+  it('focuses the dashboard return button after the last review', async () => {
+    mocks.reviews.mockResolvedValue({ deckName: 'German', cards: [reviewCard] })
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start reviews' }))
+    fireEvent.input(await screen.findByRole('textbox'), { target: { value: reviewCard.canonicalAnswer } })
+    fireEvent.click(screen.getByRole('button', { name: 'Check answer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+    const action = await screen.findByRole('button', { name: 'Return to dashboard' })
+    await waitFor(() => expect(document.activeElement).toBe(action))
+    expect(action.hasAttribute('data-auto-focused')).toBe(true)
+    action.blur()
+    action.focus()
+    expect(action.hasAttribute('data-auto-focused')).toBe(false)
+    fireEvent.click(action)
+    await screen.findByRole('button', { name: 'Start reviews' })
+  })
+
   it('continues with Again without a separate correction check', async () => {
     const nextCard: StudyCard = {
       ...reviewCard,
@@ -645,6 +662,33 @@ describe('application integration', () => {
     ).toContain('var(--coral-soft)')
     expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
     expect(window.HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the visible dashboard every minute and when returning to the tab', async () => {
+    const intervals = vi.spyOn(window, 'setInterval')
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    try {
+      renderApp()
+      await screen.findByRole('button', { name: 'Start reviews' })
+      const tick = intervals.mock.calls.find(([, delay]) => delay === 60_000)?.[0]
+      if (typeof tick !== 'function') throw new Error('Missing dashboard timer')
+      mocks.dashboard.mockClear()
+      tick()
+      await waitFor(() => expect(mocks.dashboard).toHaveBeenCalledTimes(1))
+      visibility.mockReturnValue('hidden')
+      fireEvent(document, new Event('visibilitychange'))
+      tick()
+      expect(mocks.dashboard).toHaveBeenCalledTimes(1)
+      visibility.mockReturnValue('visible')
+      fireEvent(document, new Event('visibilitychange'))
+      await waitFor(() => expect(mocks.dashboard).toHaveBeenCalledTimes(2))
+      fireEvent.click(screen.getByRole('button', { name: 'Start reviews' }))
+      tick()
+      expect(mocks.dashboard).toHaveBeenCalledTimes(2)
+    } finally {
+      intervals.mockRestore()
+      visibility.mockRestore()
+    }
   })
 
   it('autoplays each vocabulary recording when entering and advancing a lesson', async () => {

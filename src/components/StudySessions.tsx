@@ -661,7 +661,7 @@ const StudyRunner = component(
                           <input
                             use={
                               partIndex === 0
-                                ? domBinding(`${card.cardId}:${phase}:${index}`, focusAnswer)
+                                ? domBinding(`${card.cardId}:${phase}:${index}`, focusControl)
                                 : undefined
                             }
                             aria-label={part.label}
@@ -719,7 +719,7 @@ const StudyRunner = component(
                     {phase === 'revealed' ? <div class="grid grid-cols-2 gap-3">
                       <button class="button-quiet" value="again" disabled={saving || Boolean(gradeRequestId && result === 'correct')}>Again</button>
                       <button class="button-soft-primary" value="good" disabled={saving || Boolean(gradeRequestId && result === 'incorrect')}>Good</button>
-                    </div> : choices.length && !revealed ? null : <button class="button-soft-primary w-full" disabled={saving}>
+                    </div> : choices.length && !revealed ? null : <button use={choices.length && revealed ? domBinding(phase, focusControl) : undefined} class="button-soft-primary w-full" disabled={saving}>
                       {saving ? (
                         <>
                           <LoaderCircle class="size-4 animate-spin" />
@@ -743,10 +743,15 @@ const StudyRunner = component(
   },
 )
 
-function focusAnswer(element: HTMLInputElement) {
+function focusControl(element: HTMLElement) {
   const focus = () =>
     queueMicrotask(() => {
-      if (element.isConnected) element.focus()
+      if (!element.isConnected || document.activeElement === element) return
+      if (element instanceof HTMLButtonElement) {
+        element.dataset.autoFocused = ''
+        element.addEventListener('blur', () => { delete element.dataset.autoFocused }, { once: true })
+      }
+      element.focus()
     })
   focus()
   return { update: focus }
@@ -923,7 +928,7 @@ const SessionLoading = view<{
       ) : null}
       <div class="mt-6 flex justify-center gap-3">
         {props.error ? (
-          <button class="button-soft-primary" onClick={props.retry}>
+          <button use={domBinding(true, focusControl)} class="button-soft-primary" onClick={props.retry}>
             Retry
           </button>
         ) : null}
@@ -947,7 +952,7 @@ const SessionEmpty = view<{
       </div>
       <h1 class="mt-6 text-3xl font-black">{props.title}</h1>
       <p class="mt-3 text-[var(--muted)]">{props.copy}</p>
-      <button class="button-soft-primary mt-7" onClick={props.onExit}>
+      <button use={domBinding(true, focusControl)} class="button-soft-primary mt-7" onClick={props.onExit}>
         Back to dashboard
       </button>
     </section>
@@ -977,7 +982,7 @@ const SessionComplete = view<{
         done
       </h1>
       <p class="mt-4 text-[var(--muted)]">Anki saved every result.</p>
-      <button class="button-soft-primary mt-8" onClick={props.onExit}>
+      <button use={domBinding(true, focusControl)} class="button-soft-primary mt-8" onClick={props.onExit}>
         Return to dashboard
       </button>
     </section>
