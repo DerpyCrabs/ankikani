@@ -26,6 +26,10 @@ type DashboardProps = {
   onRetry: () => void
 }
 
+function scheduleTime(value: string) {
+  return new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
 export const Dashboard = component(
   { init: (_props: DashboardProps) => ({ selectedDay: null as ForecastDay | null }) },
   (owner) => {
@@ -58,7 +62,7 @@ export const Dashboard = component(
               kind="lesson"
               count={data.lessonsAvailable}
               title="Lessons"
-              hint={data.nextLessonSize ? `${data.nextLessonSize} ${data.nextLessonSize === 1 ? 'item' : 'items'} in your next lesson` : undefined}
+              hint={data.nextLessonAt ? `Next lessons · ${scheduleTime(data.nextLessonAt)}` : data.nextLessonSize ? `${data.nextLessonSize} ${data.nextLessonSize === 1 ? 'item' : 'items'} in your next lesson` : undefined}
               action="Start lessons"
               disabled={(data.nextLessonSize ?? data.lessonsAvailable) === 0}
               onClick={props.onLessons}
@@ -67,8 +71,8 @@ export const Dashboard = component(
               kind="review"
               count={data.reviewsDue}
               title="Reviews"
-              hint={data.reviewsDue ? undefined : data.nextReviewAt
-                ? `Next review · ${new Date(data.nextReviewAt).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })}`
+              hint={data.nextReviewAt
+                ? `${data.reviewsDue ? 'More reviews' : 'Next review'} · ${scheduleTime(data.nextReviewAt)}`
                 : data.firstLesson ? 'Reviews begin after your first lesson.' : undefined}
               action="Start reviews"
               disabled={data.reviewsDue === 0}

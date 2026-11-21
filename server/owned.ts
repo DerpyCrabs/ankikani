@@ -331,6 +331,22 @@ export function getOwnedDashboard(deckName: string, config: StudyConfig): Dashbo
   const visible = new Set(cards.map(card => card.cardId))
   const tomorrow = new Date(now)
   tomorrow.setHours(24,0,0,0)
+  const lessonGroups = new Map<number, number[]>()
+  for (const row of rowsForDeck(deckName, 'AND c.queue=0')) {
+    if (!visible.has(row.id)) continue
+    const times = lessonGroups.get(row.note_id) ?? []
+    times.push(row.buried_until ?? 0)
+    lessonGroups.set(row.note_id, times)
+  }
+  let nextLessonTime = Infinity
+  for (const times of lessonGroups.values()) {
+    const releases = [...new Set([tomorrow.getTime(), ...times])].filter(time => time > now.getTime())
+    for (const time of releases) {
+      const size = times.filter(release => release <= time).length
+      const limit = time >= tomorrow.getTime() ? settings.newPerDay : limits.newCards
+      if (size && size <= limit && (!nextLessonSize || times.includes(time))) nextLessonTime = Math.min(nextLessonTime, time)
+    }
+  }
   const upcoming = rowsForDeck(deckName, 'AND c.queue IN (1,2,3)').filter(row => visible.has(row.id))
   const nextTime = upcoming.reduce((earliest,row) => {
     if (row.queue === 2 && settings.reviewsPerDay === 0) return earliest
@@ -338,7 +354,7 @@ export function getOwnedDashboard(deckName: string, config: StudyConfig): Dashbo
       row.queue === 2 && !limits.reviews ? tomorrow.getTime() : 0)
     return available > now.getTime() ? Math.min(earliest, available) : earliest
   }, Infinity)
-  return { deckName, nextLessonSize, firstLesson: !logs.length && nextLessonSize > 0 && !upcoming.length,
+  return { deckName, nextLessonSize, nextLessonAt: Number.isFinite(nextLessonTime) ? new Date(nextLessonTime).toISOString() : null, firstLesson: !logs.length && nextLessonSize > 0 && !upcoming.length,
     nextReviewAt: Number.isFinite(nextTime) ? new Date(nextTime).toISOString() : null, lessonsAvailable: Math.min(new Set(cards.filter((c)=>c.queue===0).map((c)=>c.noteId)).size, limits.newCards),
     reviewsDue: reviewDue.length + learningDue.length, learning: learningDue.length,
     completedToday: countDay(today), completedYesterday: countDay(dateKey(yesterday)),

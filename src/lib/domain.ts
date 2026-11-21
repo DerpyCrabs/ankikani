@@ -233,6 +233,7 @@ export interface SpreadLegendItem {
 export interface DashboardData {
   deckName: string
   nextLessonSize?: number
+  nextLessonAt?: string | null
   nextReviewAt?: string | null
   firstLesson?: boolean
   lessonsAvailable: number
