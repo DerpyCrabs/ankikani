@@ -942,6 +942,11 @@ export function adaptCard(
     (model?.plans.length === 1 ? model.plans[0] : undefined)
   if (!model || !selectedPlan) return null
 
+  const wordFields = [selectedPlan.promptField, ...selectedPlan.answerFields]
+  if (wordFields.includes('de_word') && wordFields.includes('en_word') &&
+      wordFields.some(name => /^(?:…|[.]{3})+$/u.test(plain(field(card, name))))) return null
+
+  const vocabulary = wordFields.includes('de_word') && wordFields.includes('en_word')
   const parts = answerParts(card, selectedPlan)
   const cloze = selectedPlan.clozeField
     ? clozeContent(field(card, selectedPlan.clozeField), card.ord)
@@ -997,6 +1002,8 @@ export function adaptCard(
     exerciseChoices: isGrammarExercise(card, selectedPlan)
       ? field(card, 'Choices').split(' | ').map(group => group.split(' / ').map(plain).filter(Boolean)).filter(group => group.length)
       : undefined,
+    promptContext: vocabulary ? plain(field(card, selectedPlan.direction === 'forward'
+      ? selectedPlan.sourceExampleField : selectedPlan.targetExampleField)) : undefined,
     promptLabel: selectedPlan.wakaPrompt,
     selfGrade,
     prompt: chessDiagram ? (chessDiagram.turn ? `${chessDiagram.turn} to move` : 'Find the move') : cloze?.prompt ?? promptText,

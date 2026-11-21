@@ -344,6 +344,12 @@ const ExerciseContext = view<{ card?: StudyCard }>(({ card }) => (
   </div>
 ))
 
+function exampleWithHeadword(example: string, prompt: string) {
+  const word = prompt.split(',')[0].replace(/^(der|die|das) /iu, '').trim().toLowerCase()
+  return example.split(/(\p{L}+)/u).map(token =>
+    token.toLowerCase() === word ? <strong>{token}</strong> : token)
+}
+
 function selectableChoices(card: StudyCard) {
   const groups = card.exerciseChoices
   const parts = partsFor(card)
@@ -639,6 +645,7 @@ const StudyRunner = component(
                   </h1>
                 ) : null}
 
+                {card.promptContext && !revealed ? <p class="mt-3 text-center text-lg italic">{exampleWithHeadword(card.promptContext, card.prompt)}</p> : null}
                 <form class="mt-7" onSubmit={submit}>
                   {choices.length ? <div class="grid gap-2 sm:grid-cols-2">
                     {list(choices, choice => (
