@@ -181,7 +181,10 @@ export function listOwnedDecks(): DeckSummary[] {
         afterId = batch[batch.length - 1].id
       }
     }
-    return { id: deck.id, name: deck.name, supported, modelNames: names.map((item) => item.name) }
+    const progress = db().query(`SELECT count(DISTINCT note_id) AS total,
+      count(DISTINCT CASE WHEN reps>0 OR type>0 THEN note_id END) AS started
+      FROM cards WHERE deck_name=? OR deck_name LIKE ?`).get(deck.name, `${deck.name}::%`) as {started:number; total:number}
+    return { id: deck.id, name: deck.name, progress, supported, modelNames: names.map((item) => item.name) }
   })
 }
 

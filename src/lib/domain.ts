@@ -128,6 +128,7 @@ export interface DeckSummary {
   name: string
   supported: boolean
   modelNames: string[]
+  progress?: { started: number; total: number }
   subdeckCount?: number
 }
 

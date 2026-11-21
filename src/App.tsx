@@ -255,6 +255,7 @@ export default component({ init: initialState }, (owner) => {
         {connected ? (
           <>
             <Header
+              onOpen={() => connect(true)}
               decks={decks}
               selected={deckName}
               onDashboard={home}

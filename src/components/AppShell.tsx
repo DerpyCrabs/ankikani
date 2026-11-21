@@ -10,6 +10,7 @@ import { CollectionImportView } from './CollectionImport'
 export const Header = view<{
   decks: DeckSummary[]
   selected: string
+  onOpen: () => void
   onSelect: (name: string) => void
   onDashboard: () => void
 }>((props) => (
@@ -30,8 +31,8 @@ export const Header = view<{
 
       <label class="relative min-w-0 max-w-[380px] flex-1 sm:min-w-72 sm:flex-initial">
         <span class="sr-only">Active deck</span>
-        <Choice label="Active deck" value={props.selected} onChoose={props.onSelect}
-          options={props.decks.map(deck => ({ value: deck.name, label: deck.name + (deck.subdeckCount ? ` (+${deck.subdeckCount} subdecks)` : '') }))} />
+        <Choice label="Active deck" value={props.selected} onChoose={props.onSelect} onOpen={props.onOpen}
+          options={props.decks.map(deck => ({ value: deck.name, detail: deck.progress?.total ? `${deck.progress.started}/${deck.progress.total} started` : undefined, label: deck.name + (deck.subdeckCount ? ` (+${deck.subdeckCount} subdecks)` : '') }))} />
       </label>
     </div>
   </header>
